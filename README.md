@@ -1,59 +1,87 @@
-Portfolio Optimization with Prophet + portfolio volatility + VaR
+# 📈 Stock Portfolio Optimization with Prophet + VaR
 
-This repo analyzes and optimizes stock portfolios using Prophet for growth forecasts and Value-at-Risk (VaR) for risk assessment.
+Analyze and optimize stock portfolios using Prophet for growth forecasts and Value-at-Risk (VaR) for risk assessment.
 
-INSTALLATION
+---
 
-numpy
+## 📦 Installation
 
-pandas
+Install dependencies:
 
-yfinance
+    pip install numpy pandas yfinance prophet scipy tabulate
 
-prophet
+---
 
-scipy
-
-tabulate
-
-USAGE
+## 🚀 Usage
 
 Run from terminal:
 
-python3 main.py --tickers AAPL,MSFT,GOOG,AMZN --capital 100000 --horizon 3M --lookback-days 252 --var-alpha 0.05 --var-horizon-days 1 --rf 0.041 --max-weight-per-asset 0.4 --end 2025-09-04 --sharpe-restarts 10 --save-csv
+    python3 main.py \
+      --tickers AAPL,MSFT,GOOG,AMZN \
+      --capital 100000 \
+      --horizon 3M \
+      --lookback-days 252 \
+      --confidence 0.95
 
-INPUT PARAMETERS
+---
 
---tickers Comma-separated stock tickers, e.g. AAPL,MSFT,GOOG
---capital Total investment capital, e.g. 100000
---horizon Forecast horizon (1M, 3M, 6M, 1Y)
---lookback-days Historical lookback in business days, e.g. 252
---var-alpha VaR alpha (0.05=95%, 0.01=99%)
---var-horizon-days VaR horizon in trading days (1=1D, 5≈1W, 21≈1M)
---rf Annual risk-free rate, e.g. 0.041
---max-weight-per-asset Max allocation per stock, e.g. 0.4
---end End date (YYYY-MM-DD). Default = today
---sharpe-restarts Number of random restarts for Max Sharpe optimization
---save-csv Save results under ./outputs/
+## ⚙️ Parameters
 
-OUTPUTS
+Parameter          | Description
+------------------ | -------------------------------------------
+--tickers          | Comma-separated list of stock symbols
+--capital          | Total capital to invest (e.g. 100000)
+--horizon          | Forecast horizon (e.g. 3M, 6M)
+--lookback-days    | Number of historical days to consider
+--confidence       | VaR confidence level (e.g. 0.95)
 
-Tables printed in terminal (Summary, Weights, Allocation)
+---
 
-CSV files saved under ./outputs/ (if --save-csv is enabled):
+## 📊 Output
 
-summary_<timestamp>.csv
+Generates and prints:
 
-weights_<timestamp>.csv
+- ✅ Minimum Risk Portfolio
+- 📈 Maximum Return Portfolio
+- 🔁 Sharpe Ratio Optimized Portfolio
+- ⚖️ Equally Weighted Portfolio (Baseline)
 
-allocation_<timestamp>.csv
+Each portfolio includes:
 
-METHODS
+- Ticker weights
+- Expected return
+- Standard deviation
+- VaR at specified confidence level
 
-Forecasting Prophet predicts expected log-returns, annualized
+---
 
-Risk Covariance matrix + historical Value-at-Risk
+## 📁 Example Output
 
-Min Variance (minimize risk), Max Return (maximize return),
-Max Sharpe (maximize risk-adjusted return),
-Equal Weight (baseline)
+    Portfolio: Sharpe Ratio Optimal Portfolio
+    ------------------------------------------
+    Ticker   Weight    Expected Return    Std Dev     VaR (95%)
+    AAPL     0.30      0.080              0.18        -0.12
+    MSFT     0.40      0.085              0.20        -0.14
+    GOOG     0.20      0.090              0.22        -0.15
+    AMZN     0.10      0.070              0.25        -0.16
+
+---
+
+## 🧠 Methodology
+
+- Growth Forecasts: Meta Prophet
+- Risk Calculation: Historical simulation Value-at-Risk (VaR)
+- Optimization: Scipy to maximize Sharpe ratio and minimize volatility
+
+---
+
+## 🔍 Notes
+
+- Ensure Prophet install matches Python version (may need pystan)
+- Use custom tickers and time horizons freely
+
+---
+
+## 📚 License
+
+MIT License
