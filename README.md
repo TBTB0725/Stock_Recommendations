@@ -21,7 +21,6 @@ Run from terminal:
       --capital 100000 \
       --horizon 3M \
       --lookback-days 252 \
-      --confidence 0.95 \
       --var-alpha 0.05 \ 
       --var-horizon-days 1 \
       --rf 0.041 \ 
