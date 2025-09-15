@@ -21,6 +21,10 @@ from optimize import (
 from report import evaluate_portfolio, compile_report
 
 
+
+
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Portfolio analysis with Prophet (growth) + VaR (risk)"
@@ -50,16 +54,27 @@ def parse_args() -> argparse.Namespace:
                    help="Random seed for Max Sharpe multi-start (only used if restarts > 0).")
     p.add_argument("--save-csv", action="store_true",
                    help="If set, save summary/weights/allocation to ./outputs/")
+    
+    # Prophet hyper parameter/CV Configure
+    p.add_argument("--prophet-tune", action="store_true",
+                   help="Enable time-series cross validation + hyper-parameter tuning for Prophet")
+    p.add_argument("--prophet-cv-metric", type=str, default="rmse",
+                   choices=["mse","rmse","mae","mape","mdape","coverage"],
+                   help="Metric used to pick best Prophet params (default: rmse)")
+    p.add_argument("--prophet-cv-initial", type=int, default=None,
+                   help="Initial window for Prophet CV (in TRADING days). Default: max(252, 3*horizon)")
+    p.add_argument("--prophet-cv-period", type=int, default=None,
+                   help="Step between Prophet CV cutoffs (in TRADING days). Default: max(21, horizon//2)")
     return p.parse_args()
 
 
 def main():
+
     args = parse_args()
 
     tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
     if not tickers:
         raise ValueError("No valid tickers parsed from --tickers")
-
     capital = float(args.capital)
     horizon = args.horizon
     lookback = int(args.lookback_days)
@@ -71,6 +86,12 @@ def main():
     )
     end = None if args.end is None else pd.to_datetime(args.end).date()
 
+
+
+
+
+
+
     # 1) Load data
     print(f"[1/6] Fetching prices for {tickers} over last {lookback} business days...")
     prices = get_prices(tickers, lookback_days=lookback, pad_ratio=2.0, end=end)
@@ -81,7 +102,19 @@ def main():
 
     # 3) Prophet expected returns (annualized μ)
     print(f"[3/6] Forecasting annualized expected returns with Prophet (horizon={horizon})...")
-    mu_annual = prophet_expected_returns(prices, horizon=horizon)  # Series index=tickers
+    try:
+        mu_annual = prophet_expected_returns(
+            prices,
+            horizon=horizon,
+            tune=args.prophet_tune,
+            cv_metric=args.prophet_cv_metric,
+            cv_initial_days=args.prophet_cv_initial,
+            cv_period_days=args.prophet_cv_period,
+        )
+    except KeyError as e:
+        raise ValueError(
+            f"Invalid --horizon '{horizon}'. Allowed: 1D, 5D, 1W, 2W, 1M, 3M, 6M, 1Y."
+        ) from e
 
     # 4) Annualized covariance Σ
     print("[4/6] Estimating annualized covariance matrix...")
@@ -118,6 +151,10 @@ def main():
 
     summary, weights_tbl, alloc_tbl = compile_report(results)
 
+
+
+
+
     # Pretty print
     # 1) Clean tiny numerical noise (treat |x| < 1e-8 as 0 for weights)
     weights_tbl_clean = weights_tbl.copy()
@@ -147,6 +184,11 @@ def main():
     print(weights_fmt.to_string())
     print("\n=== Allocation ($) ===")
     print(alloc_fmt.to_string())
+
+
+
+
+
 
     if args.save_csv:
         os.makedirs("outputs", exist_ok=True)

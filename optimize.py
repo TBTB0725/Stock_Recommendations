@@ -68,6 +68,18 @@ def _random_feasible_start(n: int, cap: float, rng: np.random.Generator) -> np.n
         w = (w / s) if s > 0 else equal_weight(n)
     return w
 
+def _ensure_cap_feasible(n: int, cons: Constraints | None):
+    if cons is None or cons.max_weight_per_asset is None:
+        return
+    cap = float(cons.max_weight_per_asset)
+    if cap <= 0:
+        raise ValueError("max_weight_per_asset must be > 0.")
+    if cap * n < 1.0:
+        raise ValueError(
+            f"Infeasible: n={n}, max_weight_per_asset={cap} → n*cap={cap*n:.3f} < 1. "
+            f"Increase cap or add more assets."
+        )
+
 
 def solve_min_variance(Sigma, cons: Constraints | None = None) -> np.ndarray:
     """
@@ -76,6 +88,7 @@ def solve_min_variance(Sigma, cons: Constraints | None = None) -> np.ndarray:
         subject to sum(w) = 1,  0 <= w_i <= max_weight_per_asset
     - Sigma: covariance matrix (preferably annualized), np.ndarray or pd.DataFrame.
     """
+    _ensure_cap_feasible(_as_np(Sigma).shape[0], cons)
     S = _as_np(Sigma)
     n = S.shape[0]
     w0 = equal_weight(n)
@@ -93,6 +106,7 @@ def solve_max_return(mu, cons: Constraints | None = None) -> np.ndarray:
         subject to sum(w) = 1,  0 <= w_i <= max_weight_per_asset
     - mu: expected returns vector (use the same scale as used elsewhere, e.g., annualized).
     """
+    _ensure_cap_feasible(_as_np(mu).reshape(-1).shape[0], cons)
     m = _as_np(mu).reshape(-1)
     n = m.shape[0]
     w0 = equal_weight(n)
@@ -124,6 +138,7 @@ def solve_max_sharpe(
     - restarts: number of additional random restarts (0 disables multi-start).
     - seed: random seed for reproducibility of starting points.
     """
+    _ensure_cap_feasible(_as_np(mu).reshape(-1).shape[0], cons)
     m = _as_np(mu).reshape(-1)
     S = _as_np(Sigma)
     n = m.shape[0]

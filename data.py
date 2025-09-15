@@ -101,7 +101,7 @@ def get_prices(
     # Throw away empty columns
     prices = prices.dropna(axis=1, how="all")
     if prices.shape[1] == 0:
-        raise ValueError("tickers do not have validate price data.")
+        raise ValueError("No valid price data for the provided tickers.")
 
     # Align to the weekday frequency and fill forward (use the value before suspension/holiday)
     if auto_business_align:
@@ -116,7 +116,7 @@ def get_prices(
     # Only keep the most recent lookback_days rows (if not enough, an error will be thrown)
     if prices.shape[0] < lookback_days:
         raise ValueError(
-            f"Data does not reach {lookback_days} column, only {prices.shape[0]} column."
+            f"Data does not reach {lookback_days} rows, only {prices.shape[0]} rows."
             "Increase pad_ratio or decrease lookback_days。"
         )
     prices = prices.iloc[-lookback_days:].copy()
@@ -169,31 +169,3 @@ def to_returns(
         raise ValueError("method only support 'simple' or 'log'。")
 
     return rets.dropna(how="any") if dropna else rets
-
-
-# -----------------------------
-# Help Functions
-# -----------------------------
-def ensure_common_index(*frames: pd.DataFrame) -> Tuple[pd.DatetimeIndex, ...]:
-    """
-    Align multiple DataFrames to a common index, returning their new index (primarily useful for debugging/validation).
-    """
-    idx = None
-    for f in frames:
-        if idx is None:
-            idx = f.index
-        else:
-            idx = idx.intersection(f.index)
-    if idx is None:
-        return tuple()
-    return (idx,) * len(frames)
-
-
-__all__ = [
-    "get_prices",
-    "to_returns",
-    "ensure_common_index",
-    "PriceFrame",
-    "ReturnFrame",
-    "ReturnMethod",
-]

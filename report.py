@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -65,7 +65,7 @@ def evaluate_portfolio(
     )
 
 
-def compile_report(results: List[PortfolioResult]) -> pd.DataFrame:
+def compile_report(results: List[PortfolioResult]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Compile multiple portfolio results into a summary DataFrame (rows=strategies, columns=metrics).
     Also return weights and allocations as wide-format tables for inspection.

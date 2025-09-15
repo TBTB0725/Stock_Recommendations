@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+TRADING_DAYS_PER_YEAR = 252
 
 def cov_matrix(returns: pd.DataFrame, annualize: bool = True, trading_days_per_year: int = 252) -> pd.DataFrame:
     """
@@ -41,6 +42,11 @@ def var_historical(port_ret_series: pd.Series, alpha: float = 0.05, horizon_days
         log_returns=False → aggregate period simple return = cumulative product of (1 + r) minus 1
     """
     r = port_ret_series.dropna().astype(float)
+
+    if horizon_days < 1:
+        raise ValueError("horizon_days must be >= 1.")
+    if len(r) < horizon_days:
+        raise ValueError(f"horizon_days={horizon_days} exceeds available return length={len(r)}.")
 
     if horizon_days <= 1:
         q = np.quantile(r, alpha)
