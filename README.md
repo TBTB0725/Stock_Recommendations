@@ -14,7 +14,7 @@ Install dependencies:
 
 ## 🚀 Usage
 
-Run from terminal:
+Run from terminal
 
 For website: 
 
