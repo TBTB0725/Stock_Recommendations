@@ -3,6 +3,8 @@ import os
 import math
 import datetime as dt
 from typing import Optional, Dict, List
+import io
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -341,38 +343,71 @@ if run:
             st.markdown("**Allocation ($, rows=Ticker, cols=Strategy)**")
             st.dataframe(alloc_tbl.style.format("${:,.2f}"))
 
-        # Save CSV
-        #if save_csv:
-        #    os.makedirs("outputs", exist_ok=True)
-        #    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-        #    summary.to_csv(f"outputs/summary_{stamp}.csv")
-        #    weights_tbl.to_csv(f"outputs/weights_{stamp}.csv")
-        #    alloc_tbl.to_csv(f"outputs/allocation_{stamp}.csv")
-        #    st.success(f"CSV saved to ./outputs/ (timestamp {stamp})")
+        # --------------------------
+        # Downloads
+        # --------------------------
+        st.subheader("⬇️ Download Results")
 
-        if save_csv:
-            st.markdown("### ⬇️ Download CSVs")
+        # 用时间戳生成文件名
+        stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
+        # 各表转成 CSV 的 bytes
+        csv_summary = summary.to_csv(index=True).encode("utf-8")
+        csv_weights = weights_tbl.to_csv(index=True).encode("utf-8")
+        csv_alloc   = alloc_tbl.to_csv(index=True).encode("utf-8")
+
+        # 三个独立下载按钮
+        c_dl1, c_dl2, c_dl3 = st.columns(3)
+        with c_dl1:
             st.download_button(
                 label="Download Summary CSV",
-                data=summary.to_csv().encode("utf-8"),
-                file_name="summary.csv",
+                data=csv_summary,
+                file_name=f"summary_{stamp}.csv",
                 mime="text/csv",
+                key="dl_summary",
             )
-
+        with c_dl2:
             st.download_button(
                 label="Download Weights CSV",
-                data=weights_tbl.to_csv().encode("utf-8"),
-                file_name="weights.csv",
+                data=csv_weights,
+                file_name=f"weights_{stamp}.csv",
                 mime="text/csv",
+                key="dl_weights",
             )
-
+        with c_dl3:
             st.download_button(
                 label="Download Allocation CSV",
-                data=alloc_tbl.to_csv().encode("utf-8"),
-                file_name="allocation.csv",
+                data=csv_alloc,
+                file_name=f"allocation_{stamp}.csv",
                 mime="text/csv",
+                key="dl_alloc",
             )
+
+        # 打包成一个 ZIP 的“全部下载”按钮
+        zip_buf = io.BytesIO()
+        with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"summary_{stamp}.csv", csv_summary)
+            zf.writestr(f"weights_{stamp}.csv", csv_weights)
+            zf.writestr(f"allocation_{stamp}.csv", csv_alloc)
+        zip_buf.seek(0)
+
+        st.download_button(
+            label="Download ALL (ZIP)",
+            data=zip_buf.getvalue(),
+            file_name=f"portfolio_reports_{stamp}.zip",
+            mime="application/zip",
+            key="dl_zip",
+        )
+
+
+        # Save CSV
+        if save_csv:
+            os.makedirs("outputs", exist_ok=True)
+            stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            summary.to_csv(f"outputs/summary_{stamp}.csv")
+            weights_tbl.to_csv(f"outputs/weights_{stamp}.csv")
+            alloc_tbl.to_csv(f"outputs/allocation_{stamp}.csv")
+            st.success(f"CSV saved to ./outputs/ (timestamp {stamp})")
 
         # Footer
         st.caption("Note: Enabling Prophet tuning can be slow. Try fewer tickers / shorter lookback / shorter horizon, or reduce grid size.")
