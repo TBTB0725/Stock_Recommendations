@@ -342,13 +342,37 @@ if run:
             st.dataframe(alloc_tbl.style.format("${:,.2f}"))
 
         # Save CSV
+        #if save_csv:
+        #    os.makedirs("outputs", exist_ok=True)
+        #    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        #    summary.to_csv(f"outputs/summary_{stamp}.csv")
+        #    weights_tbl.to_csv(f"outputs/weights_{stamp}.csv")
+        #    alloc_tbl.to_csv(f"outputs/allocation_{stamp}.csv")
+        #    st.success(f"CSV saved to ./outputs/ (timestamp {stamp})")
+
         if save_csv:
-            os.makedirs("outputs", exist_ok=True)
-            stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            summary.to_csv(f"outputs/summary_{stamp}.csv")
-            weights_tbl.to_csv(f"outputs/weights_{stamp}.csv")
-            alloc_tbl.to_csv(f"outputs/allocation_{stamp}.csv")
-            st.success(f"CSV saved to ./outputs/ (timestamp {stamp})")
+            st.markdown("### ⬇️ Download CSVs")
+
+            st.download_button(
+                label="Download Summary CSV",
+                data=summary.to_csv().encode("utf-8"),
+                file_name="summary.csv",
+                mime="text/csv",
+            )
+
+            st.download_button(
+                label="Download Weights CSV",
+                data=weights_tbl.to_csv().encode("utf-8"),
+                file_name="weights.csv",
+                mime="text/csv",
+            )
+
+            st.download_button(
+                label="Download Allocation CSV",
+                data=alloc_tbl.to_csv().encode("utf-8"),
+                file_name="allocation.csv",
+                mime="text/csv",
+            )
 
         # Footer
         st.caption("Note: Enabling Prophet tuning can be slow. Try fewer tickers / shorter lookback / shorter horizon, or reduce grid size.")
