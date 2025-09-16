@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 from datetime import datetime
+import json
 
 import numpy as np
 import pandas as pd
@@ -65,6 +66,15 @@ def parse_args() -> argparse.Namespace:
                    help="Initial window for Prophet CV (in TRADING days). Default: max(252, 3*horizon)")
     p.add_argument("--prophet-cv-period", type=int, default=None,
                    help="Step between Prophet CV cutoffs (in TRADING days). Default: max(21, horizon//2)")
+    
+    # Prophet param grid (either inline JSON or path to JSON file)
+    p.add_argument("--prophet-grid", type=str, default=None,
+                   help="Inline JSON for Prophet grid, e.g. '{\"n_changepoints\":[0,5],"
+                        "\"changepoint_prior_scale\":[0.01,0.03,0.1],"
+                        "\"weekly_seasonality\":[false],\"seasonality_mode\":[\"additive\"]}'")
+    p.add_argument("--prophet-grid-file", type=str, default=None,
+                   help="Path to a JSON file containing the Prophet param grid.")
+
     return p.parse_args()
 
 
@@ -100,7 +110,40 @@ def main():
     print("[2/6] Computing daily log returns...")
     rets_log = to_returns(prices, method="log")
 
+
     # 3) Prophet expected returns (annualized μ)
+    # Parse Prophet param grid (inline JSON or file), optional
+    param_grid = None
+    if args.prophet_grid and args.prophet_grid_file:
+        raise ValueError("Use either --prophet-grid or --prophet-grid-file, not both.")
+    if args.prophet_grid:
+        try:
+            param_grid = json.loads(args.prophet_grid)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON passed to --prophet-grid: {e}") from e
+    elif args.prophet_grid_file:
+        if not os.path.exists(args.prophet_grid_file):
+            raise FileNotFoundError(f"--prophet-grid-file not found: {args.prophet_grid_file}")
+        with open(args.prophet_grid_file, "r", encoding="utf-8") as f:
+            try:
+                param_grid = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid JSON in --prophet-grid-file: {e}") from e
+
+    # Optional: light schema check (warn on unknown keys; Prophet will ignore but it's helpful)
+    if param_grid is not None:
+        allowed = {
+            "n_changepoints",
+            "changepoint_prior_scale",
+            "weekly_seasonality",
+            "yearly_seasonality",
+            "daily_seasonality",
+            "seasonality_mode",
+        }
+        unknown = set(param_grid.keys()) - allowed
+        if unknown:
+            print(f"[WARN] Unknown Prophet grid keys will be passed through: {sorted(unknown)}")
+
     print(f"[3/6] Forecasting annualized expected returns with Prophet (horizon={horizon})...")
     try:
         mu_annual = prophet_expected_returns(

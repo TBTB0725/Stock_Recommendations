@@ -27,7 +27,7 @@ def get_prices(
     lookback_days: int = 252,
     *,  #keyword-only arguments separator
     end: dt.date | None = None,
-    pad_ratio: float = 1.3,
+    pad_ratio: float = 2.0,
     auto_business_align: bool = True,
     use_adjusted_close: bool = True,
 ) -> PriceFrame:
@@ -43,7 +43,7 @@ def get_prices(
         to the most recent `lookback_days` rows.
     end : date | None
         End date for the data (defaults to today if None).
-    pad_ratio : float, default 1.3
+    pad_ratio : float, default 2.0
         Extra factor to fetch more calendar days to account for holidays or suspensions.
         For example, 252 * 1.3 ≈ 328 days will be requested.
     auto_business_align : bool, default True

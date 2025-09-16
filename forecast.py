@@ -89,6 +89,16 @@ def _choose_best_params_with_cv(
     Simple grid search based on time series cross-validation.
     Returns (best_params, best_score); smaller scores are better.
     """
+    def _normalize_param_grid(grid: Dict) -> Dict[str, List]:
+        """Ensure every value is a list; keep unknown keys to allow future Prophet args."""
+        norm = {}
+        for k, v in grid.items():
+            if isinstance(v, list):
+                norm[k] = v
+            else:
+                norm[k] = [v]
+        return norm
+    
     if not param_grid:
         param_grid = {
             "n_changepoints": [0, 5],
@@ -108,6 +118,7 @@ def _choose_best_params_with_cv(
         #    "seasonality_mode": ["additive"],
         #}
 
+    param_grid = _normalize_param_grid(param_grid)
     combos = _grid_dict_to_list(param_grid)
 
     # For each set of parameters: first fit the full value once, then use Prophet's built-in cutoffs to do rolling refitting for CV    
