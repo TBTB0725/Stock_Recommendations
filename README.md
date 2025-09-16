@@ -14,7 +14,20 @@ Install dependencies:
 
 ## 🚀 Usage
 
-Run from terminal:
+Run in terminal
+
+For website: 
+
+```bash
+streamlit run app.py
+```
+
+For teminal print: 
+
+```bash
+python3 main.py   --tickers AAPL,MSFT,GOOG,AMZN,TSLA,NVDA,META,IBM,ORCL,INTC,AMD,QCOM,CSCO,BA,CAT,KO,PEP,WMT,TGT,NKE   --capital 100000   --horizon 3M   --lookback-days 504   --var-alpha 0.05   --var-horizon-days 1   --rf 0.041   --max-weight-per-asset 0.2   --prophet-tune   --prophet-cv-metric rmse   --prophet-cv-initial 252   --prophet-cv-period 126   --end 2025-09-04   --sharpe-restarts 10   --prophet-grid '{"n_changepoints":[0,5],"changepoint_prior_scale":[0.01,0.03,0.1],"weekly_seasonality":[false],"yearly_seasonality": [False],"daily_seasonality": [False], "seasonality_mode":["additive"]}'  --save-csv
+```
+
 
     python3 main.py \
       --tickers AAPL,MSFT,GOOG,AMZN \
@@ -31,9 +44,8 @@ Run from terminal:
       --prophet-cv-period 126
       --end 2025-09-04 \ 
       --sharpe-restarts 10 \ 
+      --prophet-grid '{"n_changepoints":[0,5],"changepoint_prior_scale":[0.01,0.03,0.1],"weekly_seasonality":[false],"yearly_seasonality": [False],"daily_seasonality": [False], "seasonality_mode":["additive"]}' \
       --save-csv
-
-    python3 main.py   --tickers AAPL,MSFT,GOOG,AMZN,TSLA,NVDA,META,IBM,ORCL,INTC,AMD,QCOM,CSCO,BA,CAT,KO,PEP,WMT,TGT,NKE   --capital 100000   --horizon 3M   --lookback-days 504   --var-alpha 0.05   --var-horizon-days 1   --rf 0.041   --max-weight-per-asset 0.2   --prophet-tune   --prophet-cv-metric rmse   --prophet-cv-initial 252   --prophet-cv-period 126   --end 2025-09-04   --sharpe-restarts 10   --save-csv
 
 ---
 
@@ -56,6 +68,8 @@ Parameter                  | Description
 --end                      | End date (YYYY-MM-DD). Default = today
 --sharpe-restarts          | Number of random restarts for Max Sharpe optimization
 --save-csv                 | Save results under ./outputs/
+--prophet-grid             | Inline JSON defining Prophet param grid
+--prophet-grid-file        | Path to JSON file containing Prophet param grid (alternative to --prophet-grid)
 
 ---
 
