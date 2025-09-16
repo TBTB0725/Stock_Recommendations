@@ -15,7 +15,10 @@ Install dependencies:
 ## 🚀 Usage
 
 Run from terminal:
+    for website: 
+        streamlit run app.py
 
+    for teminal print:
     python3 main.py \
       --tickers AAPL,MSFT,GOOG,AMZN \
       --capital 100000 \
