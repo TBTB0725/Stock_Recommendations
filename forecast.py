@@ -9,6 +9,9 @@ from itertools import product
 from typing import Dict, List, Optional, Tuple
 import math
 
+_DAILY_MEAN_SHRINK = 0.5
+_DAILY_MEAN_CLIP   = 0.003  
+
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 
 
@@ -101,9 +104,9 @@ def _choose_best_params_with_cv(
     
     if not param_grid:
         param_grid = {
-            "n_changepoints": [0, 5],
-            "changepoint_prior_scale": [0.01, 0.03, 0.1],
-            "weekly_seasonality": [False], 
+            "n_changepoints": [0],
+            "changepoint_prior_scale": [1e-4, 3e-4, 1e-3],
+            "weekly_seasonality": [False],
             "yearly_seasonality": [False],
             "daily_seasonality": [False],
             "seasonality_mode": ["additive"],
@@ -188,9 +191,12 @@ def prophet_expected_returns(
         
         if (p <= 0).any():
             raise ValueError(f"Non-positive prices for {t}; log-returns require positive prices.")
+        
         r = np.log(p).diff().dropna()
-
-        df = pd.DataFrame({"ds": r.index, "y": r.values})
+        
+        mu_hist = float(r.mean())
+        r_demean = r - mu_hist
+        df = pd.DataFrame({"ds": r_demean.index, "y": r_demean.values})
 
         do_tune = tune and (len(df) >= min_points_for_cv)
 
@@ -219,7 +225,7 @@ def prophet_expected_returns(
                 weekly_seasonality=False,
                 yearly_seasonality=False,
                 n_changepoints=0,
-                changepoint_prior_scale=0.001,
+                changepoint_prior_scale=1e-4,
                 seasonality_mode="additive",
             )
             m.fit(df)
@@ -228,10 +234,14 @@ def prophet_expected_returns(
         future = m.make_future_dataframe(periods=days, freq="B")
         fcst = m.predict(future).iloc[-days:]
 
-        # Sum of log returns over the horizon → convert to simple return
-        r_horizon = np.expm1(fcst["yhat"].sum())
-        # Annualize
-        mu_annual = (1.0 + r_horizon) ** (tdpy / days) - 1.0
-        out[t] = float(mu_annual)
+        yhat_dev = fcst["yhat"].values
 
+        yhat_log = yhat_dev + mu_hist
+
+        yhat_daily_mean = float(np.mean(yhat_log))
+        yhat_daily_mean = _DAILY_MEAN_SHRINK * yhat_daily_mean
+        yhat_daily_mean = float(np.clip(yhat_daily_mean, -_DAILY_MEAN_CLIP, _DAILY_MEAN_CLIP))
+
+        mu_annual = math.expm1(yhat_daily_mean * tdpy)
+        out[t] = float(mu_annual)
     return pd.Series(out, index=prices.columns, name="mu_annual")
