@@ -180,10 +180,6 @@ if show_adv:
                 st.sidebar.error(f"Invalid JSON: {e}")
                 param_grid_json = None
 
-    # --- Save CSVs ---
-    if st.sidebar.checkbox("Enable saving CSV (to ./outputs/)", value=False):
-        save_csv = True
-
 
 
 # --------------------------
@@ -468,16 +464,6 @@ if run:
             mime="application/zip",
             key="dl_zip",
         )
-
-
-        # Save CSV
-        if save_csv:
-            os.makedirs("outputs", exist_ok=True)
-            stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            summary.to_csv(f"outputs/summary_{stamp}.csv")
-            weights_tbl.to_csv(f"outputs/weights_{stamp}.csv")
-            alloc_tbl.to_csv(f"outputs/allocation_{stamp}.csv")
-            st.success(f"CSV saved to ./outputs/ (timestamp {stamp})")
 
         # Footer
         st.caption("Note: Enabling Prophet tuning can be slow. Try fewer tickers / shorter lookback / shorter horizon, or reduce grid size.")
