@@ -403,42 +403,12 @@ if run:
         # --------------------------
         st.subheader("⬇️ Download Results")
 
-        # 用时间戳生成文件名
         stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # 各表转成 CSV 的 bytes
         csv_summary = summary.to_csv(index=True).encode("utf-8")
         csv_weights = weights_tbl.to_csv(index=True).encode("utf-8")
         csv_alloc   = alloc_tbl.to_csv(index=True).encode("utf-8")
 
-        # 三个独立下载按钮
-        c_dl1, c_dl2, c_dl3 = st.columns(3)
-        with c_dl1:
-            st.download_button(
-                label="Download Summary CSV",
-                data=csv_summary,
-                file_name=f"summary_{stamp}.csv",
-                mime="text/csv",
-                key="dl_summary",
-            )
-        with c_dl2:
-            st.download_button(
-                label="Download Weights CSV",
-                data=csv_weights,
-                file_name=f"weights_{stamp}.csv",
-                mime="text/csv",
-                key="dl_weights",
-            )
-        with c_dl3:
-            st.download_button(
-                label="Download Allocation CSV",
-                data=csv_alloc,
-                file_name=f"allocation_{stamp}.csv",
-                mime="text/csv",
-                key="dl_alloc",
-            )
-
-        # 打包成一个 ZIP 的“全部下载”按钮
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f"summary_{stamp}.csv", csv_summary)
