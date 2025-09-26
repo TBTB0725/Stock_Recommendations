@@ -44,8 +44,8 @@ st.sidebar.header("Parameters")
 
 tickers_str = st.sidebar.text_input(
     "Tickers (comma-separated)",
-    value="AAPL,MSFT,TSLA",
-    help="Example: AAPL,MSFT,TSLA",
+    value="AAPL,AMZN,BHVN",
+    help="Example: AAPL,AMZN,BHVN",
 )
 
 capital = st.sidebar.number_input(
