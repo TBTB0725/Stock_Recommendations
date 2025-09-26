@@ -154,12 +154,6 @@ def _choose_best_params_with_cv(
     return best_params, best_score
 
 
-
-
-
-
-
-
 def prophet_expected_returns(
     prices: pd.DataFrame,
     horizon: str = "3M",
@@ -169,6 +163,7 @@ def prophet_expected_returns(
     cv_period_days: Optional[int] = None,
     param_grid: Optional[Dict[str, List]] = None,
     min_points_for_cv: int = 100,
+    annualize: bool = False,  
 ) -> pd.Series:
     """
     Use Prophet to forecast each stock's daily log returns and return the annualized expected return μ.
@@ -237,9 +232,15 @@ def prophet_expected_returns(
 
         yhat_log = yhat_dev + mu_hist
 
-        yhat_daily_mean = float(np.mean(yhat_log))
-        yhat_daily_mean = float(np.clip(yhat_daily_mean, -_DAILY_MEAN_CLIP, _DAILY_MEAN_CLIP))
+        r_window = float(np.expm1(np.sum(yhat_log)))   # = exp(sum log-returns) - 1
 
-        mu_annual = math.expm1(yhat_daily_mean * tdpy)
-        out[t] = float(mu_annual)
-    return pd.Series(out, index=prices.columns, name="mu_annual")
+        if annualize:
+            yhat_daily_mean = float(np.mean(yhat_log))
+            yhat_daily_mean = float(np.clip(yhat_daily_mean, -_DAILY_MEAN_CLIP, _DAILY_MEAN_CLIP))
+            mu_annual = math.expm1(yhat_daily_mean * tdpy)
+            out[t] = float(mu_annual)
+        else:
+            out[t] = r_window
+    
+    name = "mu_annual" if annualize else f"ret_{days}d"
+    return pd.Series(out, index=prices.columns, name=name)

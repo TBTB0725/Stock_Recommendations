@@ -213,6 +213,7 @@ def _mu_prophet_cached(prices: pd.DataFrame,
             "cv_initial_days": (None if (cv_init is None or cv_init <= 0) else int(cv_init)),
             "cv_period_days": (None if (cv_per is None or cv_per <= 0) else int(cv_per)),
             "param_grid": param_grid,
+            "annualize": False,
         }
         return prophet_expected_returns(prices, **kwargs)
     except TypeError:
@@ -259,14 +260,18 @@ if run:
             rets_log = _returns_log_cached(prices)
 
         # Prophet μ (annualized)
-        with st.spinner(f"[3/6] Forecasting annualized expected returns μ (horizon={horizon})..."):
-            mu_annual = _mu_prophet_cached(
+        with st.spinner(f"[3/6] Forecasting {horizon} cumulative return..."):
+            ret_N = _mu_prophet_cached(
                 prices, horizon,
                 prophet_tune, prophet_metric,
                 None if cv_initial <= 0 else cv_initial,
                 None if cv_period  <= 0 else cv_period,
                 param_grid_json
             )
+        
+        _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
+        days = _H[horizon.upper()]
+        mu_annual = (1.0 + ret_N) ** (252.0 / days) - 1.0
 
         # Annualized covariance Σ
         with st.spinner("[4/6] Estimating annualized covariance matrix Σ..."):
@@ -275,6 +280,7 @@ if run:
         # Align order (critical)
         prices       = prices[tickers]
         rets_log     = rets_log[tickers]
+        ret_N        = ret_N.loc[tickers] 
         mu_annual    = mu_annual.loc[tickers]
         Sigma_annual = Sigma_annual.loc[tickers, tickers]
 
@@ -310,15 +316,15 @@ if run:
 
         # Forecasted μ (annual) per ticker
         with c1:
-            st.markdown("#### Forecasted Annualized μ (per Ticker)")
-            mu_df = mu_annual.reset_index()
-            mu_df.columns = ["Ticker", "MuAnnual"]
-            chart_mu = alt.Chart(mu_df).mark_bar().encode(
+            st.markdown(f"#### Forecasted {horizon} Return (per Ticker)")
+            ret_df = ret_N.reset_index()
+            ret_df.columns = ["Ticker", "RetWindow"]
+            chart_ret = alt.Chart(ret_df).mark_bar().encode(
                 x=alt.X("Ticker:N", sort=None),
-                y=alt.Y("MuAnnual:Q", title="μ (annual)"),
-                tooltip=["Ticker", alt.Tooltip("MuAnnual:Q", format=".4f")],
+                y=alt.Y("RetWindow:Q", title=f"Return over {horizon}", axis=alt.Axis(format="%")),
+                tooltip=["Ticker", alt.Tooltip("RetWindow:Q", format=".2%")],
             )
-            st.altair_chart(chart_mu, use_container_width=True)
+            st.altair_chart(chart_ret, use_container_width=True)
 
         # Weights stacked by strategy
         with c2:
