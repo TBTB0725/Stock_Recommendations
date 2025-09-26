@@ -57,7 +57,7 @@ capital = st.sidebar.number_input(
 )
 
 horizon = st.sidebar.selectbox(
-    "Forecast horizon (Prophet)",
+    "Forecast horizon",
     options=["1D","5D","1W","2W","1M"],
     index=2,
     help="Default: 1W"
