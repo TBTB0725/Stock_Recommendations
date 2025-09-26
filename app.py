@@ -88,7 +88,7 @@ if show_adv:
     st.sidebar.subheader("Advanced: optional controls")
 
     # --- Data & risk controls ---
-    if st.sidebar.checkbox("Adjust data & risk settings", value=False):
+    if st.sidebar.checkbox("Data & risk settings", value=False):
         lookback_days = st.sidebar.number_input(
             "Lookback Days (trading days)",
             min_value=60, max_value=1260, step=21, value=504,
@@ -111,31 +111,20 @@ if show_adv:
             rf = 0.0
 
     # --- Per-asset cap ---
-    if st.sidebar.checkbox("Enable per-asset weight cap", value=False):
+    if st.sidebar.checkbox("Per-asset weight cap", value=False):
         use_cap = True
         cap_val = st.sidebar.slider("Per-asset weight cap", min_value=0.05, max_value=1.0, step=0.05, value=0.4)
 
     # --- Custom end date ---
-    if st.sidebar.checkbox("Set custom end date", value=False):
+    if st.sidebar.checkbox("End date", value=False):
         end_date_sel = st.sidebar.date_input(
             "End Date (optional)",
             value=None,
             help="Leave empty = today (moves intraday).",
         )
 
-    # --- Optimizer restarts / seed ---
-    if st.sidebar.checkbox("Sharpe optimizer: restarts/seed", value=False):
-        sh_restarts = st.sidebar.number_input(
-            "Max Sharpe restarts (multi-start)",
-            min_value=0, max_value=50, step=1, value=0
-        )
-        sh_seed = st.sidebar.number_input(
-            "Max Sharpe random seed",
-            min_value=0, max_value=2**31-1, step=1, value=0
-        )
-
     # --- Prophet tuning (hidden until enabled) ---
-    if st.sidebar.checkbox("Show Prophet tuning", value=False):
+    if st.sidebar.checkbox("Prophet tuning", value=False):
         prophet_tune = st.sidebar.checkbox("Enable CV + hyperparameter grid search", value=False)
         prophet_metric = st.sidebar.selectbox(
             "CV metric",
