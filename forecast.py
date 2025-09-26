@@ -187,13 +187,11 @@ def prophet_expected_returns(
         p = prices[t].dropna()
         
         if (p <= 0).any():
-            raise ValueError(f"Non-positive prices for {t}; log-returns require positive prices.")
-        r = np.log(p).diff().dropna()
-
-        df = pd.DataFrame({"ds": r.index, "y": r.values})
+            raise ValueError(f"Non-positive prices for {t}; log-transform requires positive prices.")
+        logp = np.log(p.dropna())
+        df = pd.DataFrame({"ds": logp.index, "y": logp.values})
 
         do_tune = tune and (len(df) >= min_points_for_cv)
-
         if do_tune:
             if cv_initial_days is None:
                 cv_initial_days_eff = max(252, 3 * days)
@@ -212,7 +210,7 @@ def prophet_expected_returns(
                 period_days_trading=cv_period_days_eff,
                 metric=cv_metric,
             )
-            m = _fit_prophet_on_returns(df, best_params)
+            m = _fit_prophet_on_returns(df, best_params)  # 复用同一个构造器即可
         else:
             m = Prophet(
                 daily_seasonality=False,
@@ -224,13 +222,16 @@ def prophet_expected_returns(
             )
             m.fit(df)
 
+        future = m.make_future_dataframe(periods=days, freq="B", include_history=True)
+        fcst_full = m.predict(future)
 
-        future = m.make_future_dataframe(periods=days, freq="B")
-        fcst = m.predict(future).iloc[-days:]
+        idx_hist_last = len(df) - 1
+        yhat_start = float(fcst_full["yhat"].iloc[idx_hist_last])
+        yhat_end   = float(fcst_full["yhat"].iloc[-1])
 
-        # Sum of log returns over the horizon → convert to simple return
-        r_horizon = np.expm1(fcst["yhat"].sum())
-        # Annualize
+        logret_horizon = yhat_end - yhat_start
+        r_horizon = np.expm1(logret_horizon)
+
         mu_annual = (1.0 + r_horizon) ** (tdpy / days) - 1.0
         out[t] = float(mu_annual)
 
