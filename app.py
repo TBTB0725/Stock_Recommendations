@@ -45,8 +45,8 @@ st.sidebar.header("Parameters")
 # === Always visible ===
 tickers_str = st.sidebar.text_input(
     "Tickers (comma-separated)",
-    value="AAPL,AMZN,BHVN",
-    help="Example: AAPL,AMZN,BHVN",
+    value="AAPL, MSFT, AMZN, NVDA, GOOGL, TSLA, JPM, XOM, PFE, BHVN",
+    help="Example: AAPL, MSFT, AMZN, NVDA, GOOGL, TSLA, JPM, XOM, PFE, BHVN",
 )
 
 capital = st.sidebar.number_input(
@@ -64,7 +64,7 @@ horizon = st.sidebar.selectbox(
 
 # === Advanced toggle (everything else lives behind toggles) ===
 st.sidebar.divider()
-show_adv = st.sidebar.checkbox("Show advanced settings", value=False)
+show_adv = st.sidebar.checkbox("Show advanced", value=False)
 
 # ---- defaults when advanced settings are hidden ----
 lookback_days = 504
@@ -118,7 +118,7 @@ if show_adv:
     # --- Custom end date ---
     if st.sidebar.checkbox("End date", value=False):
         end_date_sel = st.sidebar.date_input(
-            "End Date (optional)",
+            "End Date",
             value=None,
             help="Leave empty = today (moves intraday).",
         )
