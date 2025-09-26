@@ -312,17 +312,20 @@ if run:
         r_df.columns = ["Ticker", "HorizonReturn"]
         chart_r = alt.Chart(r_df).mark_bar().encode(
             x=alt.X("Ticker:N", sort=None),
-            y=alt.Y("HorizonReturn:Q", title="Return over Horizon"),
+            y=alt.Y("HorizonReturn:Q", title="Return over Horizon",
+                    axis=alt.Axis(format="%")),                # ← y 轴百分比
             tooltip=[
                 "Ticker",
-                alt.Tooltip("HorizonReturn:Q", title="Horizon Return", format=".2%"),
+                alt.Tooltip("HorizonReturn:Q", title="Horizon Return", format=".2%"),  # ← tooltip 百分比
             ],
         )
         st.altair_chart(chart_r, use_container_width=True)
 
 
         st.subheader("📊 Summary (Portfolio Metrics)")
-        st.dataframe(summary)
+        percent_cols = [c for c in summary.columns if "sharpe" not in c.lower()]
+        fmt = {c: "{:.2%}" for c in percent_cols}
+        st.dataframe(summary.style.format(fmt))
 
         c1, c2 = st.columns(2)
 
@@ -333,8 +336,8 @@ if run:
             mu_df.columns = ["Ticker", "MuAnnual"]
             chart_mu = alt.Chart(mu_df).mark_bar().encode(
                 x=alt.X("Ticker:N", sort=None),
-                y=alt.Y("MuAnnual:Q", title="μ (annual)"),
-                tooltip=["Ticker", alt.Tooltip("MuAnnual:Q", format=".4f")],
+                y=alt.Y("MuAnnual:Q", title="μ (annual)", axis=alt.Axis(format="%")),   # ← y 轴百分比
+                tooltip=["Ticker", alt.Tooltip("MuAnnual:Q", format=".2%")],            # ← tooltip 百分比
             )
             st.altair_chart(chart_mu, use_container_width=True)
 
@@ -345,9 +348,10 @@ if run:
             wt_long.rename(columns={"index":"Ticker"}, inplace=True)
             chart_w = alt.Chart(wt_long).mark_bar().encode(
                 x=alt.X("Strategy:N"),
-                y=alt.Y("Weight:Q", stack="normalize", title="Weight (stacked)"),
+                y=alt.Y("Weight:Q", stack="normalize", title="Weight (stacked)",
+                        axis=alt.Axis(format="%")),                                    # ← y 轴百分比
                 color=alt.Color("Ticker:N"),
-                tooltip=["Strategy","Ticker",alt.Tooltip("Weight:Q", format=".4f")],
+                tooltip=["Strategy","Ticker",alt.Tooltip("Weight:Q", format=".2%")],   # ← tooltip 百分比
             )
             st.altair_chart(chart_w, use_container_width=True)
 
@@ -356,7 +360,7 @@ if run:
         c3, c4 = st.columns(2)
         with c3:
             st.markdown("**Weights (rows=Ticker, cols=Strategy)**")
-            st.dataframe(weights_tbl.style.format("{:.4f}"))
+            st.dataframe(weights_tbl.style.format("{:.2%}"))
         with c4:
             st.markdown("**Allocation ($, rows=Ticker, cols=Strategy)**")
             st.dataframe(alloc_tbl.style.format("${:,.2f}"))
