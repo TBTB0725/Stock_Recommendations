@@ -15,7 +15,7 @@ import json
 # Project modules: ensure app.py is in the same directory as these files
 from data import get_prices, to_returns
 from forecast import prophet_expected_returns
-from risk import cov_matrix
+from risk import cov_matrix, TRADING_DAYS_PER_YEAR as tdpy
 from optimize import (
     solve_min_variance,
     solve_max_return,
@@ -23,6 +23,8 @@ from optimize import (
     Constraints,
 )
 from report import evaluate_portfolio, compile_report
+
+_H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 
 # --------------------------
 # Streamlit Page Config
@@ -303,6 +305,22 @@ if run:
         # --------------------------
         # Display
         # --------------------------
+        days = _H[horizon.upper()]
+        r_horizon = (1.0 + mu_annual) ** (days / float(tdpy)) - 1.0
+        st.markdown("### 📈 Forecasted Return over Selected Horizon")
+        r_df = r_horizon.reset_index()
+        r_df.columns = ["Ticker", "HorizonReturn"]
+        chart_r = alt.Chart(r_df).mark_bar().encode(
+            x=alt.X("Ticker:N", sort=None),
+            y=alt.Y("HorizonReturn:Q", title="Return over Horizon"),
+            tooltip=[
+                "Ticker",
+                alt.Tooltip("HorizonReturn:Q", title="Horizon Return", format=".2%"),
+            ],
+        )
+        st.altair_chart(chart_r, use_container_width=True)
+
+
         st.subheader("📊 Summary (Portfolio Metrics)")
         st.dataframe(summary)
 
