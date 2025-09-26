@@ -131,7 +131,7 @@ use_custom_grid = st.sidebar.checkbox("Use custom param grid", value=False)
 
 # Default grid = your current hard-coded one
 _default_grid = {
-    "n_changepoints": [0],
+    "n_changepoints": [0, 5],
     "changepoint_prior_scale": [0.01, 0.03, 0.1],
     "weekly_seasonality": [False],
     "yearly_seasonality": [False],
@@ -213,7 +213,6 @@ def _mu_prophet_cached(prices: pd.DataFrame,
             "cv_initial_days": (None if (cv_init is None or cv_init <= 0) else int(cv_init)),
             "cv_period_days": (None if (cv_per is None or cv_per <= 0) else int(cv_per)),
             "param_grid": param_grid,
-            "annualize": False,
         }
         return prophet_expected_returns(prices, **kwargs)
     except TypeError:
@@ -260,21 +259,14 @@ if run:
             rets_log = _returns_log_cached(prices)
 
         # Prophet μ (annualized)
-        with st.spinner(f"[3/6] Forecasting {horizon} cumulative return..."):
-            ret_N = _mu_prophet_cached(
+        with st.spinner(f"[3/6] Forecasting annualized expected returns μ (horizon={horizon})..."):
+            mu_annual = _mu_prophet_cached(
                 prices, horizon,
                 prophet_tune, prophet_metric,
                 None if cv_initial <= 0 else cv_initial,
                 None if cv_period  <= 0 else cv_period,
                 param_grid_json
             )
-        
-        _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
-        days = _H[horizon.upper()]
-        
-        log_daily = np.log1p(ret_N) / float(days)
-
-        mu_annual = np.expm1(log_daily * 252.0)
 
         # Annualized covariance Σ
         with st.spinner("[4/6] Estimating annualized covariance matrix Σ..."):
@@ -283,7 +275,6 @@ if run:
         # Align order (critical)
         prices       = prices[tickers]
         rets_log     = rets_log[tickers]
-        ret_N        = ret_N.loc[tickers] 
         mu_annual    = mu_annual.loc[tickers]
         Sigma_annual = Sigma_annual.loc[tickers, tickers]
 
@@ -307,45 +298,27 @@ if run:
 
             summary, weights_tbl, alloc_tbl = compile_report(results)
 
-        port_retN = (weights_tbl.mul(ret_N, axis=0)).sum(axis=0)
-
-        col_old = "ExpReturn(annual)"
-        col_new = f"ExpReturn({horizon})"
-
-        if col_old in summary.columns:
-            summary.drop(columns=[col_old], inplace=True)
-        summary.insert(0, col_new, port_retN.reindex(summary.index))
-
         st.success("Done ✅")
 
         # --------------------------
         # Display
         # --------------------------
         st.subheader("📊 Summary (Portfolio Metrics)")
-        var_cols = [c for c in summary.columns if c.startswith("VaR(")]
-        col_new = f"ExpReturn({horizon})"
-
-        fmt = {col_new: "{:.2%}"}
-        for c in var_cols:
-            fmt[c] = "{:.2%}"
-        fmt.setdefault("Sharpe", "{:.4f}")
-        fmt.setdefault("Volatility(annual)", "{:.4f}")
-
-        st.dataframe(summary.style.format(fmt))
+        st.dataframe(summary)
 
         c1, c2 = st.columns(2)
 
         # Forecasted μ (annual) per ticker
         with c1:
-            st.markdown(f"#### Forecasted {horizon} Return (per Ticker)")
-            ret_df = ret_N.reset_index()
-            ret_df.columns = ["Ticker", "RetWindow"]
-            chart_ret = alt.Chart(ret_df).mark_bar().encode(
+            st.markdown("#### Forecasted Annualized μ (per Ticker)")
+            mu_df = mu_annual.reset_index()
+            mu_df.columns = ["Ticker", "MuAnnual"]
+            chart_mu = alt.Chart(mu_df).mark_bar().encode(
                 x=alt.X("Ticker:N", sort=None),
-                y=alt.Y("RetWindow:Q", title=f"Return over {horizon}", axis=alt.Axis(format="%")),
-                tooltip=["Ticker", alt.Tooltip("RetWindow:Q", format=".2%")],
+                y=alt.Y("MuAnnual:Q", title="μ (annual)"),
+                tooltip=["Ticker", alt.Tooltip("MuAnnual:Q", format=".4f")],
             )
-            st.altair_chart(chart_ret, use_container_width=True)
+            st.altair_chart(chart_mu, use_container_width=True)
 
         # Weights stacked by strategy
         with c2:
