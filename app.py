@@ -364,41 +364,58 @@ if run:
 
         c1, c2 = st.columns(2)
 
-        # Forecasted μ (annual) per ticker
+        ret_col = next(c for c in summary.columns if c.lower().startswith("return("))
+        vol_col = next(c for c in summary.columns if c.lower().startswith("volatility("))
+
         with c1:
-            st.markdown("#### Forecasted Annualized μ (per Ticker)")
-            mu_df = mu_annual.reset_index()
-            mu_df.columns = ["Ticker", "MuAnnual"]
-            chart_mu = alt.Chart(mu_df).mark_bar().encode(
-                x=alt.X("Ticker:N", sort=None),
-                y=alt.Y("MuAnnual:Q", title="μ (annual)", axis=alt.Axis(format="%")),   # ← y 轴百分比
-                tooltip=["Ticker", alt.Tooltip("MuAnnual:Q", format=".2%")],            # ← tooltip 百分比
+            st.markdown(f"#### Strategy Return — {h_label}")
+            ret_df = summary.reset_index()[["Strategy", ret_col]]
+            chart_ret = (
+                alt.Chart(ret_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Strategy:N", sort=None, title="Strategy"),
+                    y=alt.Y(f"{ret_col}:Q", title=ret_col, axis=alt.Axis(format="%")),
+                    tooltip=[
+                        "Strategy",
+                        alt.Tooltip(f"{ret_col}:Q", title="Return", format=".2%"),
+                    ],
+                )
             )
-            st.altair_chart(chart_mu, use_container_width=True)
+            st.altair_chart(chart_ret, use_container_width=True)
 
-        # Weights stacked by strategy
         with c2:
-            st.markdown("#### Weights by Strategy (Stacked)")
-            wt_long = weights_tbl.reset_index().melt("index", var_name="Strategy", value_name="Weight")
-            wt_long.rename(columns={"index":"Ticker"}, inplace=True)
-            chart_w = alt.Chart(wt_long).mark_bar().encode(
-                x=alt.X("Strategy:N"),
-                y=alt.Y("Weight:Q", stack="normalize", title="Weight (stacked)",
-                        axis=alt.Axis(format="%")),                                    # ← y 轴百分比
-                color=alt.Color("Ticker:N"),
-                tooltip=["Strategy","Ticker",alt.Tooltip("Weight:Q", format=".2%")],   # ← tooltip 百分比
+            st.markdown(f"#### Strategy Volatility — {h_label}")
+            vol_df = summary.reset_index()[["Strategy", vol_col]]
+            chart_vol = (
+                alt.Chart(vol_df)
+                .mark_bar()
+                .encode(
+                    x=alt.X("Strategy:N", sort=None, title="Strategy"),
+                    y=alt.Y(f"{vol_col}:Q", title=vol_col, axis=alt.Axis(format="%")),
+                    tooltip=[
+                        "Strategy",
+                        alt.Tooltip(f"{vol_col}:Q", title="Volatility", format=".2%"),
+                    ],
+                )
             )
-            st.altair_chart(chart_w, use_container_width=True)
+            st.altair_chart(chart_vol, use_container_width=True)
 
-        # Tables: Weights / Allocation
-        st.subheader("🧮 Weights / Allocation")
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown("**Weights (rows=Ticker, cols=Strategy)**")
-            st.dataframe(weights_tbl.style.format("{:.2%}"))
-        with c4:
-            st.markdown("**Allocation ($, rows=Ticker, cols=Strategy)**")
-            st.dataframe(alloc_tbl.style.format("${:,.2f}"))
+        st.markdown("#### Weights by Strategy (Stacked)")
+        wt_long = weights_tbl.reset_index().melt("index", var_name="Strategy", value_name="Weight")
+        wt_long.rename(columns={"index":"Ticker"}, inplace=True)
+        chart_w = (
+            alt.Chart(wt_long)
+            .mark_bar()
+            .encode(
+                x=alt.X("Strategy:N"),
+                y=alt.Y("Weight:Q", stack="normalize", title="Weight (stacked)", axis=alt.Axis(format="%")),
+                color=alt.Color("Ticker:N"),
+                tooltip=["Strategy", "Ticker", alt.Tooltip("Weight:Q", format=".2%")],
+            )
+        )
+        st.altair_chart(chart_w, use_container_width=True)
+
 
         # --------------------------
         # Downloads
