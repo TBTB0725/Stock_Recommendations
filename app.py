@@ -131,7 +131,7 @@ use_custom_grid = st.sidebar.checkbox("Use custom param grid", value=False)
 
 # Default grid = your current hard-coded one
 _default_grid = {
-    "n_changepoints": [0, 5],
+    "n_changepoints": [0],
     "changepoint_prior_scale": [0.01, 0.03, 0.1],
     "weekly_seasonality": [False],
     "yearly_seasonality": [False],
@@ -271,7 +271,14 @@ if run:
         
         _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
         days = _H[horizon.upper()]
-        mu_annual = (1.0 + ret_N) ** (252.0 / days) - 1.0
+        
+        DAILY_MEAN_CLIP = 0.003
+        
+        log_daily = np.log1p(ret_N) / float(days)
+
+        log_daily = log_daily.clip(lower=-DAILY_MEAN_CLIP, upper=DAILY_MEAN_CLIP)
+
+        mu_annual = np.expm1(log_daily * 252.0)
 
         # Annualized covariance Σ
         with st.spinner("[4/6] Estimating annualized covariance matrix Σ..."):

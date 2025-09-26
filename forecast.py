@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Tuple
 import math
 
 _DAILY_MEAN_CLIP   = 0.003  
+_DAILY_MEAN_SHRINK = 0.5
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 
@@ -232,11 +233,13 @@ def prophet_expected_returns(
 
         yhat_log = yhat_dev + mu_hist
 
-        r_window = float(np.expm1(np.sum(yhat_log)))   # = exp(sum log-returns) - 1
+        yhat_daily_mean = float(np.mean(yhat_log))
+        yhat_daily_mean = _DAILY_MEAN_SHRINK * yhat_daily_mean
+        yhat_daily_mean = float(np.clip(yhat_daily_mean, -_DAILY_MEAN_CLIP, _DAILY_MEAN_CLIP))
+
+        r_window = float(math.expm1(yhat_daily_mean * days))
 
         if annualize:
-            yhat_daily_mean = float(np.mean(yhat_log))
-            yhat_daily_mean = float(np.clip(yhat_daily_mean, -_DAILY_MEAN_CLIP, _DAILY_MEAN_CLIP))
             mu_annual = math.expm1(yhat_daily_mean * tdpy)
             out[t] = float(mu_annual)
         else:
