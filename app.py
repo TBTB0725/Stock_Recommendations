@@ -95,10 +95,6 @@ if show_adv:
             min_value=60, max_value=1260, step=21, value=504,
             help="Default: 504 (~1Y)"
         )
-        var_alpha = st.sidebar.slider(
-            "VaR alpha (e.g., 0.05 = 95% VaR)",
-            min_value=0.001, max_value=0.2, step=0.001, value=0.05,
-        )
         rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
         try:
             rf = float(rf_str)
@@ -109,12 +105,12 @@ if show_adv:
     # --- Per-asset cap ---
     if st.sidebar.checkbox("Per-asset weight cap", value=False):
         use_cap = True
-        cap_val = st.sidebar.slider("Per-asset weight cap", min_value=0.05, max_value=1.0, step=0.05, value=0.4)
+        cap_val = st.sidebar.slider("", min_value=0.05, max_value=1.0, step=0.05, value=0.4)
 
     # --- Custom end date ---
     if st.sidebar.checkbox("End date", value=False):
         end_date_sel = st.sidebar.date_input(
-            "End Date",
+            "",
             value=None,
             help="Leave empty = today (moves intraday).",
         )
@@ -324,10 +320,10 @@ if run:
 
         summary_h = pd.DataFrame({
             "Strategy": summary.index,
-            "Return({h_label})": mu_h.values,
-            "Volatility({h_label})": sig_h.values,
+            f"Return({h_label})": mu_h.values,
+            f"Volatility({h_label})": sig_h.values,
             "VaR(95%, 1D)": var_1d.values,
-            "Sharpe({h_label})": sharpe_h.values
+            f"Sharpe({h_label})": sharpe_h.values
         }).set_index("Strategy")
 
         summary = summary_h
@@ -337,16 +333,16 @@ if run:
         # --------------------------
         days = _H[horizon.upper()]
         r_horizon = (1.0 + mu_annual) ** (days / float(tdpy)) - 1.0
-        st.markdown("### 📈 Forecasted Return over {h_label}")
+        st.markdown(f"### 📈 Forecasted Return over {h_label}")
         r_df = r_horizon.reset_index()
         r_df.columns = ["Ticker", "HorizonReturn"]
         chart_r = alt.Chart(r_df).mark_bar().encode(
             x=alt.X("Ticker:N", sort=None),
-            y=alt.Y("HorizonReturn:Q", title="Return over {h_label}",
+            y=alt.Y("HorizonReturn:Q", title=f"Return over {h_label}",
                     axis=alt.Axis(format="%")), 
             tooltip=[
                 "Ticker",
-                alt.Tooltip("HorizonReturn:Q", title="Return {h_label}", format=".2%"), 
+                alt.Tooltip("HorizonReturn:Q", title=f"Return {h_label}", format=".2%"), 
             ],
         )
         st.altair_chart(chart_r, use_container_width=True)
