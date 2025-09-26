@@ -118,7 +118,7 @@ if show_adv:
 
     # --- Prophet tuning (hidden until enabled) ---
     if st.sidebar.checkbox("Prophet tuning", value=False):
-        prophet_tune = st.sidebar.checkbox("Enable CV + hyperparameter grid search", value=False)
+        prophet_tune = True
         prophet_metric = st.sidebar.selectbox(
             "CV metric",
             options=["rmse","mse","mae","mape","mdape","coverage"],
