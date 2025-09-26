@@ -124,7 +124,7 @@ def get_prices(
     # Ensure again
     prices = prices.dropna(axis=0, how="any")
     if prices.shape[0] < lookback_days // 2:
-        raise ValueError("Data is not enough")
+        raise ValueError("Data is not enough. Please decrease Lookback Days.")
 
     return prices
 

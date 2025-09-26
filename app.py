@@ -42,6 +42,7 @@ st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / 
 # --------------------------
 st.sidebar.header("Parameters")
 
+# === Always visible ===
 tickers_str = st.sidebar.text_input(
     "Tickers (comma-separated)",
     value="AAPL,AMZN,BHVN",
@@ -61,106 +62,128 @@ horizon = st.sidebar.selectbox(
     help="Default: 3M"
 )
 
-lookback_days = st.sidebar.number_input(
-    "Lookback Days (trading days)",
-    min_value=60, max_value=1260, step=21, value=504,
-    help="Default: 504 (~1Y)"
-)
-
-var_alpha = st.sidebar.slider(
-    "VaR alpha (e.g., 0.05 = 95% VaR)",
-    min_value=0.001, max_value=0.2, step=0.001, value=0.05,
-)
-
-var_h_days = st.sidebar.number_input(
-    "VaR Horizon (trading days)",
-    min_value=1, step=1, value=1,
-    help="1=1D, 5≈1W, 21≈1M"
-)
-
-rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
-try:
-    rf = float(rf_str)
-except ValueError:
-    st.error("Please enter a valid number")
-    rf = 0.0
-
-use_cap = st.sidebar.checkbox("Enable per-asset weight cap", value=False)
-cap_val: Optional[float] = None
-if use_cap:
-    cap_val = st.sidebar.slider("Per-asset weight cap", min_value=0.05, max_value=1.0, step=0.05, value=0.4)
-
-end_date_sel = st.sidebar.date_input(
-    "End Date (optional)",
-    value=None,
-    help="Leave empty = today (moves intraday).",
-)
-
-sh_restarts = st.sidebar.number_input(
-    "Max Sharpe restarts (multi-start)",
-    min_value=0, max_value=50, step=1, value=0
-)
-sh_seed = st.sidebar.number_input(
-    "Max Sharpe random seed",
-    min_value=0, max_value=2**31-1, step=1, value=0
-)
-
-save_csv = st.sidebar.checkbox("Save results as CSV (./outputs/)", value=False)
-
+# === Advanced toggle (everything else lives behind toggles) ===
 st.sidebar.divider()
-st.sidebar.subheader("Prophet: Cross-Validation & Tuning")
-prophet_tune = st.sidebar.checkbox("Enable CV + hyperparameter grid search", value=False)
-prophet_metric = st.sidebar.selectbox(
-    "CV metric",
-    options=["rmse","mse","mae","mape","mdape","coverage"],
-    index=0,
-    help="Returns can be positive and negative; rmse/mae recommended."
-)
-cv_initial = st.sidebar.number_input(
-    "CV initial (TRADING days, optional)",
-    min_value=0, value=252,
-    help="Default: max(252, 3*horizon). Enter 0 to use default."
-)
-cv_period = st.sidebar.number_input(
-    "CV period (TRADING days, optional)",
-    min_value=0, value=126,
-    help="Default: max(21, horizon//2). Enter 0 to use default."
-)
+show_adv = st.sidebar.checkbox("Show advanced settings", value=False)
 
-# --- Prophet param grid (JSON) ---
-st.sidebar.subheader("Prophet: Param Grid (JSON)")
-use_custom_grid = st.sidebar.checkbox("Use custom param grid", value=False)
+# ---- defaults when advanced settings are hidden ----
+lookback_days = 504
+var_alpha = 0.05
+var_h_days = 1
+rf = 0.042
+use_cap = False
+cap_val: Optional[float] = None
+end_date_sel = None
+sh_restarts = 0
+sh_seed = 0
+save_csv = False
 
-# Default grid = your current hard-coded one
-_default_grid = {
-    "n_changepoints": [0, 5],
-    "changepoint_prior_scale": [0.01, 0.03, 0.1],
-    "weekly_seasonality": [False],
-    "yearly_seasonality": [False],
-    "daily_seasonality": [False],
-    "seasonality_mode": ["additive"]
-}
+prophet_tune = False
+prophet_metric = "rmse"
+cv_initial = 252
+cv_period = 126
+param_grid_json: Optional[str] = None  # keep None unless user enables & provides JSON
 
-grid_json_text = st.sidebar.text_area(
-    "Grid JSON",
-    value=json.dumps(_default_grid, indent=2),
-    height=180,
-    disabled=not use_custom_grid,
-    help='Edit JSON to tune Prophet. Example keys: '
-         'n_changepoints, changepoint_prior_scale, weekly_seasonality, '
-         'yearly_seasonality, daily_seasonality, seasonality_mode'
-)
+if show_adv:
+    st.sidebar.subheader("Advanced: optional controls")
 
-# Validate JSON (store as string; we will parse again in the cached helper)
-param_grid_json: Optional[str] = None
-if use_custom_grid:
-    try:
-        # quick validation
-        _ = json.loads(grid_json_text)
-        param_grid_json = grid_json_text
-    except json.JSONDecodeError as e:
-        st.sidebar.error(f"Invalid JSON: {e}")
-        param_grid_json = None
+    # --- Data & risk controls ---
+    if st.sidebar.checkbox("Adjust data & risk settings", value=False):
+        lookback_days = st.sidebar.number_input(
+            "Lookback Days (trading days)",
+            min_value=60, max_value=1260, step=21, value=504,
+            help="Default: 504 (~1Y)"
+        )
+        var_alpha = st.sidebar.slider(
+            "VaR alpha (e.g., 0.05 = 95% VaR)",
+            min_value=0.001, max_value=0.2, step=0.001, value=0.05,
+        )
+        var_h_days = st.sidebar.number_input(
+            "VaR Horizon (trading days)",
+            min_value=1, step=1, value=1,
+            help="1=1D, 5≈1W, 21≈1M"
+        )
+        rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
+        try:
+            rf = float(rf_str)
+        except ValueError:
+            st.sidebar.error("Please enter a valid number for risk-free rate.")
+            rf = 0.0
+
+    # --- Per-asset cap ---
+    if st.sidebar.checkbox("Enable per-asset weight cap", value=False):
+        use_cap = True
+        cap_val = st.sidebar.slider("Per-asset weight cap", min_value=0.05, max_value=1.0, step=0.05, value=0.4)
+
+    # --- Custom end date ---
+    if st.sidebar.checkbox("Set custom end date", value=False):
+        end_date_sel = st.sidebar.date_input(
+            "End Date (optional)",
+            value=None,
+            help="Leave empty = today (moves intraday).",
+        )
+
+    # --- Optimizer restarts / seed ---
+    if st.sidebar.checkbox("Sharpe optimizer: restarts/seed", value=False):
+        sh_restarts = st.sidebar.number_input(
+            "Max Sharpe restarts (multi-start)",
+            min_value=0, max_value=50, step=1, value=0
+        )
+        sh_seed = st.sidebar.number_input(
+            "Max Sharpe random seed",
+            min_value=0, max_value=2**31-1, step=1, value=0
+        )
+
+    # --- Prophet tuning (hidden until enabled) ---
+    if st.sidebar.checkbox("Show Prophet tuning", value=False):
+        prophet_tune = st.sidebar.checkbox("Enable CV + hyperparameter grid search", value=False)
+        prophet_metric = st.sidebar.selectbox(
+            "CV metric",
+            options=["rmse","mse","mae","mape","mdape","coverage"],
+            index=0,
+            help="Returns can be positive and negative; rmse/mae recommended."
+        )
+        cv_initial = st.sidebar.number_input(
+            "CV initial (TRADING days, optional)",
+            min_value=0, value=252,
+            help="Default: max(252, 3*horizon). Enter 0 to use default."
+        )
+        cv_period = st.sidebar.number_input(
+            "CV period (TRADING days, optional)",
+            min_value=0, value=126,
+            help="Default: max(21, horizon//2). Enter 0 to use default."
+        )
+
+        # Custom grid JSON behind its own toggle
+        if st.sidebar.checkbox("Use custom param grid (JSON)", value=False):
+            _default_grid = {
+                "n_changepoints": [0, 5],
+                "changepoint_prior_scale": [0.01, 0.03, 0.1],
+                "weekly_seasonality": [False],
+                "yearly_seasonality": [False],
+                "daily_seasonality": [False],
+                "seasonality_mode": ["additive"]
+            }
+            grid_json_text = st.sidebar.text_area(
+                "Grid JSON",
+                value=json.dumps(_default_grid, indent=2),
+                height=180,
+                help='Edit JSON to tune Prophet. Example keys: '
+                    'n_changepoints, changepoint_prior_scale, weekly_seasonality, '
+                    'yearly_seasonality, daily_seasonality, seasonality_mode'
+            )
+            try:
+                # quick validation
+                _ = json.loads(grid_json_text)
+                param_grid_json = grid_json_text
+            except json.JSONDecodeError as e:
+                st.sidebar.error(f"Invalid JSON: {e}")
+                param_grid_json = None
+
+    # --- Save CSVs ---
+    if st.sidebar.checkbox("Enable saving CSV (to ./outputs/)", value=False):
+        save_csv = True
+
 
 
 # --------------------------
