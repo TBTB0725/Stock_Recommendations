@@ -89,18 +89,17 @@ if show_adv:
     st.sidebar.subheader("Advanced: optional controls")
 
     # --- Data & risk controls ---
-    if st.sidebar.checkbox("Data & risk settings", value=False):
-        lookback_days = st.sidebar.number_input(
-            "Lookback Days (trading days)",
-            min_value=60, max_value=1260, step=21, value=504,
-            help="Default: 504 (~1Y)"
-        )
-        rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
-        try:
-            rf = float(rf_str)
-        except ValueError:
-            st.sidebar.error("Please enter a valid number for risk-free rate.")
-            rf = 0.0
+    lookback_days = st.sidebar.number_input(
+        "Lookback Days (trading days)",
+        min_value=60, max_value=1260, step=21, value=504,
+        help="Default: 504 (~1Y)"
+    )
+    rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
+    try:
+        rf = float(rf_str)
+    except ValueError:
+        st.sidebar.error("Please enter a valid number for risk-free rate.")
+        rf = 0.0
 
     # --- Per-asset cap ---
     if st.sidebar.checkbox("Per-asset weight cap", value=False):
