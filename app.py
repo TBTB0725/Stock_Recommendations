@@ -417,6 +417,16 @@ if run:
         st.altair_chart(chart_w, use_container_width=True)
 
 
+        # Tables: Weights / Allocation
+        st.subheader("🧮 Weights / Allocation")
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("**Weights (rows=Ticker, cols=Strategy)**")
+            st.dataframe(weights_tbl.style.format("{:.2%}"))
+        with c4:
+            st.markdown("**Allocation ($, rows=Ticker, cols=Strategy)**")
+            st.dataframe(alloc_tbl.style.format("${:,.2f}"))
+
         # --------------------------
         # Downloads
         # --------------------------
