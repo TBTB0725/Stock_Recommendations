@@ -273,7 +273,7 @@ if run:
         days = _H[horizon.upper()]
         
         DAILY_MEAN_CLIP = 0.003
-        
+
         log_daily = np.log1p(ret_N) / float(days)
 
         log_daily = log_daily.clip(lower=-DAILY_MEAN_CLIP, upper=DAILY_MEAN_CLIP)
@@ -311,13 +311,32 @@ if run:
 
             summary, weights_tbl, alloc_tbl = compile_report(results)
 
+        port_retN = (weights_tbl.T.mul(ret_N, axis=0)).sum(axis=1) 
+
+        col_old = "ExpReturn(annual)"
+        col_new = f"ExpReturn({horizon})"
+
+        if col_old in summary.columns:
+            summary.drop(columns=[col_old], inplace=True)
+        summary.insert(0, col_new, port_retN.reindex(summary.index))
+
         st.success("Done ✅")
 
         # --------------------------
         # Display
         # --------------------------
         st.subheader("📊 Summary (Portfolio Metrics)")
-        st.dataframe(summary)
+
+        var_cols = [c for c in summary.columns if c.startswith("VaR(")]
+        col_new = f"ExpReturn({horizon})"
+
+        fmt = {col_new: "{:.2%}"} 
+        for c in var_cols:
+            fmt[c] = "{:.2%}"
+        fmt.setdefault("Sharpe", "{:.4f}")
+        fmt.setdefault("Volatility(annual)", "{:.4f}")
+
+        st.dataframe(summary.style.format(fmt))
 
         c1, c2 = st.columns(2)
 
