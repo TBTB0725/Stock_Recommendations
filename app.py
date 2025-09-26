@@ -105,14 +105,15 @@ if show_adv:
     # --- Per-asset cap ---
     if st.sidebar.checkbox("Per-asset weight cap", value=False):
         use_cap = True
-        cap_val = st.sidebar.slider("", min_value=0.05, max_value=1.0, step=0.05, value=0.4)
+        cap_val = st.sidebar.slider("per-asset weight cap", min_value=0.05, max_value=1.0, step=0.05, value=0.4, label_visibility="collapsed")
 
     # --- Custom end date ---
     if st.sidebar.checkbox("End date", value=False):
         end_date_sel = st.sidebar.date_input(
-            "",
+            "end date",
             value=None,
             help="Leave empty = today (moves intraday).",
+            label_visibility="collapsed"
         )
 
     # --- Prophet tuning (hidden until enabled) ---
