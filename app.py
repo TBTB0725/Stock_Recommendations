@@ -25,6 +25,7 @@ from optimize import (
 from report import evaluate_portfolio, compile_report
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
+_H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
 
 # --------------------------
 # Streamlit Page Config
@@ -97,11 +98,6 @@ if show_adv:
         var_alpha = st.sidebar.slider(
             "VaR alpha (e.g., 0.05 = 95% VaR)",
             min_value=0.001, max_value=0.2, step=0.001, value=0.05,
-        )
-        var_h_days = st.sidebar.number_input(
-            "VaR Horizon (trading days)",
-            min_value=1, step=1, value=1,
-            help="1=1D, 5≈1W, 21≈1M"
         )
         rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
         try:
@@ -314,6 +310,7 @@ if run:
         days = _H[horizon.upper()]
         scale = days / float(tdpy)             # time fraction in years
         sqrt_scale = math.sqrt(scale)
+        h_label = _H_HUMAN.get(horizon.upper(), horizon)
 
         mu_a  = summary["ExpReturn(annual)"].astype(float)
         sig_a = summary["Volatility(annual)"].astype(float)
@@ -327,10 +324,10 @@ if run:
 
         summary_h = pd.DataFrame({
             "Strategy": summary.index,
-            "Return(horizon)": mu_h.values,
-            "Volatility(horizon)": sig_h.values,
-            "VaR(95%, 1D)": var_1d.values,     # ← 不变
-            "Sharpe(horizon)": sharpe_h.values
+            "Return({h_label})": mu_h.values,
+            "Volatility({h_label})": sig_h.values,
+            "VaR(95%, 1D)": var_1d.values,
+            "Sharpe({h_label})": sharpe_h.values
         }).set_index("Strategy")
 
         summary = summary_h
@@ -340,16 +337,16 @@ if run:
         # --------------------------
         days = _H[horizon.upper()]
         r_horizon = (1.0 + mu_annual) ** (days / float(tdpy)) - 1.0
-        st.markdown("### 📈 Forecasted Return over Selected Horizon")
+        st.markdown("### 📈 Forecasted Return over {h_label}")
         r_df = r_horizon.reset_index()
         r_df.columns = ["Ticker", "HorizonReturn"]
         chart_r = alt.Chart(r_df).mark_bar().encode(
             x=alt.X("Ticker:N", sort=None),
-            y=alt.Y("HorizonReturn:Q", title="Return over Horizon",
-                    axis=alt.Axis(format="%")),                # ← y 轴百分比
+            y=alt.Y("HorizonReturn:Q", title="Return over {h_label}",
+                    axis=alt.Axis(format="%")), 
             tooltip=[
                 "Ticker",
-                alt.Tooltip("HorizonReturn:Q", title="Horizon Return", format=".2%"),  # ← tooltip 百分比
+                alt.Tooltip("HorizonReturn:Q", title="Return {h_label}", format=".2%"), 
             ],
         )
         st.altair_chart(chart_r, use_container_width=True)
