@@ -88,18 +88,27 @@ param_grid_json: Optional[str] = None  # keep None unless user enables & provide
 if show_adv:
     st.sidebar.subheader("Advanced: optional controls")
 
-    # --- Data & risk controls ---
-    lookback_days = st.sidebar.number_input(
-        "Lookback Days (trading days)",
-        min_value=60, max_value=1260, step=21, value=504,
-        help="Default: 504 (~1Y)"
-    )
-    rf_str = st.sidebar.text_input("Risk-free rate (annual)", value="0.042")
-    try:
-        rf = float(rf_str)
-    except ValueError:
-        st.sidebar.error("Please enter a valid number for risk-free rate.")
-        rf = 0.0
+    # --- Lookback days（独立开关，折叠标签） ---
+    if st.sidebar.checkbox("Lookback days", value=False):
+        lookback_days = st.sidebar.number_input(
+            "Lookback Days (trading days)",
+            min_value=60, max_value=1260, step=21, value=lookback_days,
+            help="Default: 504 (~1Y)",
+            label_visibility="collapsed",   # ← 不显示标题，避免重复
+        )
+
+    # --- Risk-free rate（独立开关，折叠标签） ---
+    if st.sidebar.checkbox("Risk-free rate", value=False):
+        rf_str = st.sidebar.text_input(
+            "Risk-free rate (annual)",
+            value=f"{rf:.3f}",
+            label_visibility="collapsed"    # ← 不显示标题
+        )
+        try:
+            rf = float(rf_str)
+        except ValueError:
+            st.sidebar.error("Please enter a valid number for risk-free rate.")
+            rf = 0.0
 
     # --- Per-asset cap ---
     if st.sidebar.checkbox("Per-asset weight cap", value=False):
