@@ -325,6 +325,31 @@ if run:
 
         st.success("Done ✅")
 
+        # === Convert summary from annualized → horizon (keep VaR as-is) ===
+        days = _H[horizon.upper()]
+        scale = days / float(tdpy)             # time fraction in years
+        sqrt_scale = math.sqrt(scale)
+
+        mu_a  = summary["ExpReturn(annual)"].astype(float)
+        sig_a = summary["Volatility(annual)"].astype(float)
+        var_1d = summary["VaR(95%, 1D)"] 
+
+        mu_h  = (1.0 + mu_a) ** scale - 1.0
+        sig_h = sig_a * sqrt_scale
+        rf_h  = (1.0 + rf) ** scale - 1.0
+
+        sharpe_h = (mu_h - rf_h) / sig_h.replace(0, np.nan)
+
+        summary_h = pd.DataFrame({
+            "Strategy": summary.index,
+            "Return(horizon)": mu_h.values,
+            "Volatility(horizon)": sig_h.values,
+            "VaR(95%, 1D)": var_1d.values,     # ← 不变
+            "Sharpe(horizon)": sharpe_h.values
+        }).set_index("Strategy")
+
+        summary = summary_h
+
         # --------------------------
         # Display
         # --------------------------
