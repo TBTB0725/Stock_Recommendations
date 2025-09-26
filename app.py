@@ -417,7 +417,7 @@ if run:
         zip_buf.seek(0)
 
         st.download_button(
-            label="Download ALL (ZIP)",
+            label="Download ZIP",
             data=zip_buf.getvalue(),
             file_name=f"portfolio_reports_{stamp}.zip",
             mime="application/zip",
