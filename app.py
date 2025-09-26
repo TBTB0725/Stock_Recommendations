@@ -311,7 +311,7 @@ if run:
 
             summary, weights_tbl, alloc_tbl = compile_report(results)
 
-        port_retN = (weights_tbl.T.mul(ret_N, axis=0)).sum(axis=1) 
+        port_retN = (weights_tbl.mul(ret_N, axis=0)).sum(axis=0)
 
         col_old = "ExpReturn(annual)"
         col_new = f"ExpReturn({horizon})"
@@ -326,11 +326,10 @@ if run:
         # Display
         # --------------------------
         st.subheader("📊 Summary (Portfolio Metrics)")
-
         var_cols = [c for c in summary.columns if c.startswith("VaR(")]
         col_new = f"ExpReturn({horizon})"
 
-        fmt = {col_new: "{:.2%}"} 
+        fmt = {col_new: "{:.2%}"}
         for c in var_cols:
             fmt[c] = "{:.2%}"
         fmt.setdefault("Sharpe", "{:.4f}")
