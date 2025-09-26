@@ -272,11 +272,7 @@ if run:
         _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
         days = _H[horizon.upper()]
         
-        DAILY_MEAN_CLIP = 0.003
-
         log_daily = np.log1p(ret_N) / float(days)
-
-        log_daily = log_daily.clip(lower=-DAILY_MEAN_CLIP, upper=DAILY_MEAN_CLIP)
 
         mu_annual = np.expm1(log_daily * 252.0)
 

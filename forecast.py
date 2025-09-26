@@ -14,6 +14,9 @@ _DAILY_MEAN_SHRINK = 0.5
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 
+def horizon_to_days(h: str) -> int:
+    return _H[h.upper()]
+
 
 
 def _grid_dict_to_list(param_grid: Dict[str, List]) -> List[Dict]:
