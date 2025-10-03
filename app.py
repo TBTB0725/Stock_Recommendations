@@ -331,6 +331,10 @@ if run:
                     with st.expander("🛠 Debug (Env & Provider)", expanded=False):
                         st.write("NEWS_LLM_PROVIDER =", os.getenv("NEWS_LLM_PROVIDER"))
                         st.write("GEMINI_API_KEY set? ", bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")))
+                
+                if st.sidebar.button("🧹 Clear cache now"):
+                    st.cache_data.clear()
+                    st.experimental_rerun()
 
                 # ② 抓取结果调试
                 with st.expander("🛠 Debug (News Fetch)", expanded=False):
