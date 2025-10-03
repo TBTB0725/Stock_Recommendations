@@ -5,14 +5,12 @@ import datetime as dt
 from typing import Optional, Dict, List
 import io
 import zipfile
-import time
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
 import json
-import sentiment  
-
 
 # Project modules: ensure app.py is in the same directory as these files
 from data import get_prices, to_returns
@@ -25,8 +23,6 @@ from optimize import (
     Constraints,
 )
 from report import evaluate_portfolio, compile_report
-from news import fetch_finviz_headlines, recent_headlines
-from sentiment import score_headlines_grouped, impact_to_annual_uplift
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
@@ -66,55 +62,6 @@ horizon = st.sidebar.selectbox(
     index=2,
     help="Default: 1W"
 )
-
-# === News Sentiment (LLM) ===
-st.sidebar.divider()
-use_news_sent = st.sidebar.checkbox("Use news sentiment (LLM)", value=False,
-    help="Fetch Finviz headlines → LLM scores ∈[-1,1] → map to return uplift and blend into μ.")
-
-debug_news = st.sidebar.checkbox("Debug news sentiment", value=False)
-
-news_days_back = 10
-news_per_ticker = 30
-news_blend_w = 0.5
-news_beta_h = 0.04
-llm_provider_note = "Gemini (set GEMINI_API_KEY)"
-
-# Quick self-test: 仅用首个 ticker 的 5 条标题跑一次
-if use_news_sent and debug_news:
-    with st.expander("🔬 One-click LLM self-test", expanded=False):
-        try:
-            t0 = tickers[0]
-            df_t0 = df_recent[df_recent["ticker"] == t0].sort_values("published_at", ascending=False).head(5)
-            if not df_t0.empty:
-                heads = "\n".join(f"- {h}" for h in df_t0["headline"].tolist())
-                prompt = sentiment._PROMPT_TMPL.format(headlines=heads)  # 如果 sentiment 没暴露就直接复制模板
-                st.code(prompt, language="markdown")
-
-                raw = sentiment._gemini_call(prompt)  # 直接测底层调用
-                st.markdown("**Raw from _gemini_call:**")
-                st.code(raw, language="json")
-
-                try:
-                    j = json.loads(raw)
-                    st.markdown("**Parsed JSON:**")
-                    st.json(j)
-                except Exception as e:
-                    st.error(f"json.loads failed: {e}")
-            else:
-                st.info("No headlines for the first ticker after filter.")
-        except Exception as e:
-            st.error(f"Self-test error: {e}")
-
-
-if use_news_sent:
-    news_days_back = st.sidebar.slider("News lookback days", min_value=3, max_value=30, value=10, step=1)
-    news_per_ticker = st.sidebar.slider("Max headlines per ticker", min_value=5, max_value=100, value=30, step=5)
-    news_blend_w = st.sidebar.slider("Blend weight w (μ += w * uplift_ann)", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
-    news_beta_h = st.sidebar.slider("Impact→Horizon uplift β_h", min_value=0.01, max_value=0.10, value=0.04, step=0.005,
-        help="Strong positive news (impact=+1) ⇒ +β_h over forecast horizon; negative likewise.")
-    st.sidebar.caption(f"LLM provider: {llm_provider_note}")
-
 
 # === Advanced toggle (everything else lives behind toggles) ===
 st.sidebar.divider()
@@ -283,26 +230,6 @@ def _mu_prophet_cached(prices: pd.DataFrame,
         # Legacy fallback
         return prophet_expected_returns(prices, horizon=horizon)
 
-@st.cache_data(show_spinner=False)
-def _fetch_news_cached(tickers: List[str]) -> pd.DataFrame:
-    return fetch_finviz_headlines(tickers)
-
-@st.cache_data(show_spinner=False)
-def _score_news_cached(df_recent: pd.DataFrame,
-                       provider: str,
-                       key_fingerprint: str,
-                       return_raw: bool,
-                       nonce: float) -> pd.DataFrame:
-    """
-    把 provider & key 指纹 & return_raw & nonce 纳入缓存键。
-    - debug 模式下 nonce = time.time()，每次点击都强制重算。
-    - 正常模式下 nonce = 0，不影响缓存命中。
-    """
-    _ = (provider, key_fingerprint, return_raw, round(nonce, 3))
-    return score_headlines_grouped(df_recent, return_raw=return_raw)
-
-
-
 
 # --------------------------
 # Run button
@@ -351,115 +278,6 @@ if run:
                 None if cv_period  <= 0 else cv_period,
                 param_grid_json
             )
-        
-        # --- (Optional) News → LLM sentiment → blend into mu_annual ---
-        if use_news_sent:
-            with st.spinner("[3b] Fetching & scoring news (Finviz + LLM)..."):
-                import os
-                df_news = _fetch_news_cached(tickers)
-
-                # ① 环境与 Provider 调试
-                if debug_news:
-                    with st.expander("🛠 Debug (Env & Provider)", expanded=False):
-                        st.write("NEWS_LLM_PROVIDER =", os.getenv("NEWS_LLM_PROVIDER"))
-                        st.write("GEMINI_API_KEY set? ", bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")))
-                
-                if st.sidebar.button("🧹 Clear cache now"):
-                    st.cache_data.clear()
-                    st.experimental_rerun()
-
-                # ② 抓取结果调试
-                with st.expander("🛠 Debug (News Fetch)", expanded=False):
-                    st.write("tickers:", tickers)
-                    st.write("fetched rows:", 0 if df_news is None else len(df_news))
-                    if df_news is not None and not df_news.empty:
-                        st.dataframe(df_news.head(10))
-
-                # 过滤最近 N 天 & 限制每只股票的条数
-                df_recent = recent_headlines(df_news, days_back=news_days_back, per_ticker=news_per_ticker)
-
-                # 🔬 One-click LLM self-test —— 必须在 df_recent 已经生成之后
-                if use_news_sent and debug_news:
-                    with st.expander("🔬 One-click LLM self-test", expanded=False):
-                        try:
-                            # 取当前输入的第一个 ticker（确保在 if run: 里，tickers 已经定义）
-                            if not tickers:
-                                st.warning("No tickers parsed.")
-                            else:
-                                t0 = tickers[0]
-                                df_t0 = df_recent[df_recent["ticker"] == t0].sort_values("published_at", ascending=False).head(5)
-                                if df_t0.empty:
-                                    st.info(f"No recent headlines for {t0} after filter.")
-                                else:
-                                    heads = "\n".join(f"- {h}" for h in df_t0["headline"].tolist())
-                                    prompt = sentiment._PROMPT_TMPL.format(headlines=heads)
-                                    st.markdown("**Prompt (first 5 headlines):**")
-                                    st.code(prompt, language="markdown")
-
-                                    raw = sentiment._gemini_call(prompt)        # 直接调用底层
-                                    st.markdown("**Raw from _gemini_call (as JSON string):**")
-                                    st.code(raw or "<EMPTY>", language="json")
-
-                                    # 显示底层调用路径/错误（来自 sentiment.LAST_CALL_DEBUG）
-                                    lcd = getattr(sentiment, "LAST_CALL_DEBUG", {})
-                                    st.write("LAST_CALL_DEBUG:", lcd)
-
-                                    # 试解析 JSON
-                                    try:
-                                        import json as _json
-                                        j = _json.loads(raw) if raw else {}
-                                        st.markdown("**Parsed JSON:**")
-                                        st.json(j)
-                                    except Exception as e:
-                                        st.error(f"json.loads failed: {e}")
-                        except Exception as e:
-                            st.error(f"Self-test error: {e}")
-
-
-                # ③ 过滤结果调试
-                with st.expander("🛠 Debug (Recent Filter)", expanded=False):
-                    st.write("after filter rows:", 0 if df_recent is None else len(df_recent))
-                    if df_recent is not None and not df_recent.empty:
-                        st.dataframe(df_recent.head(10))
-
-                if df_recent.empty:
-                    st.warning("No recent headlines found. Skipping news sentiment blend.")
-                else:
-                    # 评分
-                    provider = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
-                    key_fp = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "")[:8]
-                    nonce = (time.time() if debug_news else 0.0)   # ← 关键：debug 时强制破缓存
-
-                    df_scores = _score_news_cached(df_recent, provider, key_fp, debug_news, nonce)
-
-                    # 对齐顺序
-                    s_impact = df_scores.set_index("ticker")["impact"].reindex(tickers).fillna(0.0)
-
-                    # Debug：把完整评分结果摊开看
-                    if debug_news:
-                        with st.expander("🧾 Raw LLM outputs (first few)", expanded=True):
-                            cols_to_show = [c for c in ["ticker","impact","n_headlines","last_ts","path","err","raw"] if c in df_scores.columns]
-                            st.dataframe(df_scores[cols_to_show].head(10))
-
-                    # impact → 年化增量
-                    days = _H[horizon.upper()]
-                    uplift_ann = impact_to_annual_uplift(s_impact, horizon_days=days, beta_h=news_beta_h, tdpy=tdpy)
-
-                    # μ ← μ + w * uplift_ann
-                    mu_annual = (mu_annual + news_blend_w * uplift_ann).astype(float)
-
-
-                    # 展示情绪表
-                    with st.expander("📰 News Sentiment (per Ticker)", expanded=True):
-                        show_df = pd.DataFrame({
-                            "Impact [-1,1]": s_impact,
-                            "Annual Uplift (from impact)": uplift_ann,
-                        })
-                        st.dataframe(show_df.style.format({
-                            "Impact [-1,1]": "{:.2f}",
-                            "Annual Uplift (from impact)": "{:.2%}",
-                        }))
-
 
         # Annualized covariance Σ
         with st.spinner("[4/6] Estimating annualized covariance matrix Σ..."):
@@ -538,11 +356,6 @@ if run:
         )
         st.altair_chart(chart_r, use_container_width=True)
 
-        # Debug：查看原始 LLM 返回（只在 debug_news=True 且 df_scores 含 raw 列时显示）
-        if debug_news and ("raw" in df_scores.columns):
-            with st.expander("🧾 Raw LLM outputs (first few)", expanded=False):
-                # 只展示前 3 条，避免页面过长
-                st.dataframe(df_scores[["ticker", "raw"]].head(3))
 
         st.subheader("📊 Summary (Portfolio Metrics)")
         percent_cols = [c for c in summary.columns if "sharpe" not in c.lower()]
