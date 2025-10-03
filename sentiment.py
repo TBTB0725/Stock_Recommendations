@@ -5,6 +5,7 @@ import time
 from typing import Iterable, Dict, List, Tuple
 import numpy as np
 import pandas as pd
+import os, json, time, base64, traceback
 
 _USE_PROVIDER = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
 
@@ -61,34 +62,38 @@ Headlines:
 
 def _gemini_call(prompt: str) -> str:
     """
-    强制让 Gemini 产出 JSON；同时兼容三种返回路径：
-    1) resp.text
-    2) candidates[].content.parts[].text
-    3) candidates[].content.parts[].inline_data (application/json, base64)
+    目标：
+    - 强制模型输出 application/json
+    - 兼容三种返回形态：resp.text / parts[].text / parts[].inline_data (base64 JSON)
+    - 把本次调用的路径/元数据记录到 LAST_CALL_DEBUG（终端 print + 可回读）
     """
-    import base64
+    global LAST_CALL_DEBUG
+    LAST_CALL_DEBUG = {"path": "unknown", "parts": 0, "err": None}
 
-    model = genai.GenerativeModel(
-        "gemini-2.5-flash",
-        generation_config={
-            "response_mime_type": "application/json",
-            "temperature": 0,
-            "candidate_count": 1,
-        },
-    )
-    resp = model.generate_content(prompt)
-
-    # 1) 最常见：直接 text
-    if hasattr(resp, "text") and resp.text:
-        return resp.text.strip()
-
-    # 2/3) 遍历 parts，优先解码 inline_data (application/json)，其次拼 text
     try:
+        model = genai.GenerativeModel(
+            "gemini-2.5-flash",
+            generation_config={
+                "response_mime_type": "application/json",
+                "temperature": 0,
+                "candidate_count": 1,
+            },
+        )
+        resp = model.generate_content(prompt)
+
+        # case 1: 直接 text
+        if hasattr(resp, "text") and resp.text:
+            LAST_CALL_DEBUG.update({"path": "resp.text"})
+            print("[gemini] using resp.text")
+            return resp.text.strip()
+
+        # case 2/3: 遍历 parts
         cand = resp.candidates[0]
         parts = getattr(cand.content, "parts", []) or []
+        LAST_CALL_DEBUG["parts"] = len(parts)
+
         texts = []
-        for p in parts:
-            # inline_data: base64 编码的二进制块
+        for i, p in enumerate(parts):
             inline = getattr(p, "inline_data", None)
             if inline and getattr(inline, "mime_type", "") == "application/json":
                 b64 = getattr(inline, "data", "") or ""
@@ -96,71 +101,113 @@ def _gemini_call(prompt: str) -> str:
                     try:
                         raw = base64.b64decode(b64).decode("utf-8", "ignore")
                         if raw.strip():
+                            LAST_CALL_DEBUG.update({"path": f"parts[{i}].inline_data"})
+                            print(f"[gemini] using parts[{i}].inline_data(application/json)")
                             return raw.strip()
-                    except Exception:
-                        pass
-            # 纯文本块
+                    except Exception as e:
+                        print("[gemini] inline_data decode error:", e)
+
             t = getattr(p, "text", None)
             if t:
                 texts.append(t)
-        if texts:
-            return "\n".join(texts).strip()
-    except Exception:
-        pass
 
-    # 兜底：转字符串（用于 debug）
-    return str(resp)
+        if texts:
+            LAST_CALL_DEBUG.update({"path": "parts[].text"})
+            print("[gemini] using parts[].text join")
+            return "\n".join(texts).strip()
+
+        # 兜底
+        LAST_CALL_DEBUG.update({"path": "str(resp)"})
+        print("[gemini] fallback to str(resp)")
+        return str(resp)
+
+    except Exception as e:
+        LAST_CALL_DEBUG.update({"err": traceback.format_exc()})
+        print("[gemini] EXCEPTION:\n", LAST_CALL_DEBUG["err"])
+        return ""
+
 
 
 
 def score_headlines_grouped(
     headlines_df: pd.DataFrame,
-    sleep_sec: float = 1.0,
-    return_raw: bool = False,   # ← 新增：需要时返回原始 LLM 文本
+    sleep_sec: float = 0.2,
+    return_raw: bool = False,
 ) -> pd.DataFrame:
     """
     输入: DataFrame[ticker, published_at, headline, url]
-    输出: DataFrame[ticker, impact, n_headlines, last_ts]（如 return_raw=True，还会带 raw 列）
+    输出: DataFrame[ticker, impact, n_headlines, last_ts, raw?, path?, err?]
+    - 每个 ticker 把若干 headline 合并一次喂给 LLM
+    - 把本次调用的调试信息（path/err）也带回（return_raw=True 时最有用）
+    - 终端会打印每个 ticker 的处理日志
     """
-    if headlines_df.empty:
-        cols = ["ticker", "impact", "n_headlines", "last_ts"] + (["raw"] if return_raw else [])
+    cols = ["ticker", "impact", "n_headlines", "last_ts"]
+    if return_raw:
+        cols += ["raw", "path", "err"]
+
+    if headlines_df is None or headlines_df.empty:
         return pd.DataFrame(columns=cols)
 
-    rows = []
+    out_rows = []
+    # 关键：显式保证按 ticker 分组；若分组失败，说明列名/类型不对，会直接抛出错误
     for t, g in headlines_df.groupby("ticker", sort=False):
-        g_sorted = g.sort_values("published_at", ascending=False)
-        heads = "\n".join(f"- {h}" for h in g_sorted["headline"].tolist())
-        prompt = _PROMPT_TMPL.format(headlines=heads)
-
-        impact = 0.0
-        raw_text = ""
         try:
-            if _use_gemini:
-                raw_text = _gemini_call(prompt)
-            else:
-                raw_text = '{"symbol": "", "name": "", "impact": 0.0}'
+            g_sorted = g.sort_values("published_at", ascending=False)
+            n = len(g_sorted)
+            heads = "\n".join(f"- {h}" for h in g_sorted["headline"].tolist())[:8000]  # 防 prompt 太长
+            prompt = _PROMPT_TMPL.format(headlines=heads)
 
-            # 直接解析 JSON（此时大概率是干净的 JSON）
-            import json
-            j = json.loads(raw_text)
-            impact = float(j.get("impact", 0.0))
-            impact = max(-1.0, min(1.0, impact))
-        except Exception:
+            print(f"[sentiment] scoring ticker={t} headlines={n}")
+            raw = ""
             impact = 0.0
+            path = None
+            err = None
 
-        row = {
-            "ticker": t,
-            "impact": float(impact),
-            "n_headlines": int(len(g_sorted)),
-            "last_ts": g_sorted["published_at"].max(),
-        }
-        if return_raw:
-            row["raw"] = raw_text
-        rows.append(row)
-        time.sleep(sleep_sec)
+            if _use_gemini:
+                raw = _gemini_call(prompt)  # 可能是 json 字符串，也可能为空
+                path = (LAST_CALL_DEBUG or {}).get("path")
+                if (LAST_CALL_DEBUG or {}).get("err"):
+                    err = LAST_CALL_DEBUG["err"]
 
-    return pd.DataFrame(rows).reset_index(drop=True)
-    
+                if raw:
+                    try:
+                        j = json.loads(raw)
+                        impact = float(j.get("impact", 0.0))
+                        impact = max(-1.0, min(1.0, impact))
+                    except Exception:
+                        err = (err or "") + "\njson.loads failed\n" + traceback.format_exc()
+                        print("[sentiment] json.loads failed:", err)
+                        impact = 0.0
+                else:
+                    err = (err or "") + "\n_gemini_call returned empty string"
+                    print("[sentiment] empty raw from _gemini_call")
+                    impact = 0.0
+            else:
+                err = "LLM disabled (_use_gemini=False)"
+                impact = 0.0
+
+            row = {
+                "ticker": t,
+                "impact": float(impact),
+                "n_headlines": int(n),
+                "last_ts": g_sorted["published_at"].max(),
+            }
+            if return_raw:
+                row.update({"raw": raw, "path": path, "err": err})
+
+            out_rows.append(row)
+            time.sleep(sleep_sec)
+
+        except Exception:
+            # 记录单个 ticker 的错误，不让整个批次失败
+            print(f"[sentiment] EXCEPTION in ticker={t}:\n", traceback.format_exc())
+            row = {"ticker": t, "impact": 0.0, "n_headlines": len(g), "last_ts": g["published_at"].max()}
+            if return_raw:
+                row.update({"raw": "", "path": None, "err": traceback.format_exc()})
+            out_rows.append(row)
+
+    return pd.DataFrame(out_rows, columns=cols)
+
 
 def impact_to_annual_uplift(
     impact: pd.Series,

@@ -5,7 +5,7 @@ import datetime as dt
 from typing import Optional, Dict, List
 import io
 import zipfile
-
+import time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -78,6 +78,33 @@ news_per_ticker = 30
 news_blend_w = 0.5
 news_beta_h = 0.04
 llm_provider_note = "Gemini (set GEMINI_API_KEY)"
+
+# Quick self-test: 仅用首个 ticker 的 5 条标题跑一次
+if use_news_sent and debug_news:
+    with st.expander("🔬 One-click LLM self-test", expanded=False):
+        try:
+            t0 = tickers[0]
+            df_t0 = df_recent[df_recent["ticker"] == t0].sort_values("published_at", ascending=False).head(5)
+            if not df_t0.empty:
+                heads = "\n".join(f"- {h}" for h in df_t0["headline"].tolist())
+                prompt = sentiment._PROMPT_TMPL.format(headlines=heads)  # 如果 sentiment 没暴露就直接复制模板
+                st.code(prompt, language="markdown")
+
+                raw = sentiment._gemini_call(prompt)  # 直接测底层调用
+                st.markdown("**Raw from _gemini_call:**")
+                st.code(raw, language="json")
+
+                try:
+                    j = json.loads(raw)
+                    st.markdown("**Parsed JSON:**")
+                    st.json(j)
+                except Exception as e:
+                    st.error(f"json.loads failed: {e}")
+            else:
+                st.info("No headlines for the first ticker after filter.")
+        except Exception as e:
+            st.error(f"Self-test error: {e}")
+
 
 if use_news_sent:
     news_days_back = st.sidebar.slider("News lookback days", min_value=3, max_value=30, value=10, step=1)
@@ -263,12 +290,16 @@ def _fetch_news_cached(tickers: List[str]) -> pd.DataFrame:
 def _score_news_cached(df_recent: pd.DataFrame,
                        provider: str,
                        key_fingerprint: str,
-                       return_raw: bool) -> pd.DataFrame:
+                       return_raw: bool,
+                       nonce: float) -> pd.DataFrame:
     """
-    把 provider & key 指纹 & return_raw 纳入缓存键。
+    把 provider & key 指纹 & return_raw & nonce 纳入缓存键。
+    - debug 模式下 nonce = time.time()，每次点击都强制重算。
+    - 正常模式下 nonce = 0，不影响缓存命中。
     """
-    _ = (provider, key_fingerprint, return_raw)  # 仅用于缓存键
+    _ = (provider, key_fingerprint, return_raw, round(nonce, 3))
     return score_headlines_grouped(df_recent, return_raw=return_raw)
+
 
 
 
@@ -357,11 +388,19 @@ if run:
                 else:
                     # 评分
                     provider = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
-                    key_fp = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "")[:8]  # 取前8位做指纹
+                    key_fp = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "")[:8]
+                    nonce = (time.time() if debug_news else 0.0)   # ← 关键：debug 时强制破缓存
 
-                    df_scores = _score_news_cached(df_recent, provider, key_fp, debug_news)
-                    # 若某些 ticker 没有分数，用 0 填充；并按当前 tickers 顺序对齐
+                    df_scores = _score_news_cached(df_recent, provider, key_fp, debug_news, nonce)
+
+                    # 对齐顺序
                     s_impact = df_scores.set_index("ticker")["impact"].reindex(tickers).fillna(0.0)
+
+                    # Debug：把完整评分结果摊开看
+                    if debug_news:
+                        with st.expander("🧾 Raw LLM outputs (first few)", expanded=True):
+                            cols_to_show = [c for c in ["ticker","impact","n_headlines","last_ts","path","err","raw"] if c in df_scores.columns]
+                            st.dataframe(df_scores[cols_to_show].head(10))
 
                     # impact → 年化增量
                     days = _H[horizon.upper()]
@@ -369,6 +408,7 @@ if run:
 
                     # μ ← μ + w * uplift_ann
                     mu_annual = (mu_annual + news_blend_w * uplift_ann).astype(float)
+
 
                     # 展示情绪表
                     with st.expander("📰 News Sentiment (per Ticker)", expanded=True):
