@@ -262,13 +262,14 @@ def _fetch_news_cached(tickers: List[str]) -> pd.DataFrame:
 @st.cache_data(show_spinner=False)
 def _score_news_cached(df_recent: pd.DataFrame,
                        provider: str,
-                       key_fingerprint: str) -> pd.DataFrame:
+                       key_fingerprint: str,
+                       return_raw: bool) -> pd.DataFrame:
     """
-    把 provider & key 指纹纳入缓存键，避免‘无Key时的0分’被长期缓存。
+    把 provider & key 指纹 & return_raw 纳入缓存键。
     """
-    # 参数只用于缓存键，不在函数体里用
-    _ = (provider, key_fingerprint)
-    return score_headlines_grouped(df_recent)
+    _ = (provider, key_fingerprint, return_raw)  # 仅用于缓存键
+    return score_headlines_grouped(df_recent, return_raw=return_raw)
+
 
 
 # --------------------------
@@ -354,7 +355,7 @@ if run:
                     provider = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
                     key_fp = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "")[:8]  # 取前8位做指纹
 
-                    df_scores = _score_news_cached(df_recent, provider, key_fp)  # columns: ticker, impact, n_headlines, last_ts
+                    df_scores = _score_news_cached(df_recent, provider, key_fp, debug_news)
                     # 若某些 ticker 没有分数，用 0 填充；并按当前 tickers 顺序对齐
                     s_impact = df_scores.set_index("ticker")["impact"].reindex(tickers).fillna(0.0)
 
@@ -454,6 +455,11 @@ if run:
         )
         st.altair_chart(chart_r, use_container_width=True)
 
+        # Debug：查看原始 LLM 返回（只在 debug_news=True 且 df_scores 含 raw 列时显示）
+        if debug_news and ("raw" in df_scores.columns):
+            with st.expander("🧾 Raw LLM outputs (first few)", expanded=False):
+                # 只展示前 3 条，避免页面过长
+                st.dataframe(df_scores[["ticker", "raw"]].head(3))
 
         st.subheader("📊 Summary (Portfolio Metrics)")
         percent_cols = [c for c in summary.columns if "sharpe" not in c.lower()]

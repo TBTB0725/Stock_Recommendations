@@ -60,21 +60,47 @@ Headlines:
 """
 
 def _gemini_call(prompt: str) -> str:
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    """
+    强制 JSON 输出；优先用 resp.text，兜底拼接 parts。
+    """
+    model = genai.GenerativeModel(
+        "gemini-2.5-flash",
+        generation_config={"response_mime_type": "application/json"}  # ← 关键：直接要 JSON
+    )
     resp = model.generate_content(prompt)
-    return resp.candidates[0].content.parts[0].text.strip()
+
+    # 1) 最常见：直接拿纯文本（已是 JSON 字符串）
+    if hasattr(resp, "text") and resp.text:
+        return resp.text.strip()
+
+    # 2) 兜底：把第一条候选的所有文本片段拼起来
+    try:
+        parts = resp.candidates[0].content.parts
+        txts = []
+        for p in parts:
+            if hasattr(p, "text") and p.text:
+                txts.append(p.text)
+        if txts:
+            return "\n".join(txts).strip()
+    except Exception:
+        pass
+
+    # 3) 最兜底：把 resp 转成字符串
+    return str(resp)
+
 
 def score_headlines_grouped(
     headlines_df: pd.DataFrame,
     sleep_sec: float = 1.0,
+    return_raw: bool = False,   # ← 新增：需要时返回原始 LLM 文本
 ) -> pd.DataFrame:
     """
     输入: DataFrame[ticker, published_at, headline, url]
-    输出: DataFrame[ticker, impact, n_headlines, last_ts]
-    - 将每只股票的若干标题合并，交给 LLM 产出 impact。
+    输出: DataFrame[ticker, impact, n_headlines, last_ts]（如 return_raw=True，还会带 raw 列）
     """
     if headlines_df.empty:
-        return pd.DataFrame(columns=["ticker", "impact", "n_headlines", "last_ts"])
+        cols = ["ticker", "impact", "n_headlines", "last_ts"] + (["raw"] if return_raw else [])
+        return pd.DataFrame(columns=cols)
 
     rows = []
     for t, g in headlines_df.groupby("ticker", sort=False):
@@ -83,26 +109,30 @@ def score_headlines_grouped(
         prompt = _PROMPT_TMPL.format(headlines=heads)
 
         impact = 0.0
+        raw_text = ""
         try:
             if _use_gemini:
-                text = _gemini_call(prompt)
+                raw_text = _gemini_call(prompt)
             else:
-                text = '{"symbol": "", "name": "", "impact": 0.0}'
+                raw_text = '{"symbol": "", "name": "", "impact": 0.0}'
 
-            j = _extract_json(text)
+            # 直接解析 JSON（此时大概率是干净的 JSON）
+            import json
+            j = json.loads(raw_text)
             impact = float(j.get("impact", 0.0))
             impact = max(-1.0, min(1.0, impact))
         except Exception:
             impact = 0.0
 
-        rows.append(
-            {
-                "ticker": t,
-                "impact": float(impact),
-                "n_headlines": int(len(g_sorted)),
-                "last_ts": g_sorted["published_at"].max(),
-            }
-        )
+        row = {
+            "ticker": t,
+            "impact": float(impact),
+            "n_headlines": int(len(g_sorted)),
+            "last_ts": g_sorted["published_at"].max(),
+        }
+        if return_raw:
+            row["raw"] = raw_text
+        rows.append(row)
         time.sleep(sleep_sec)
 
     return pd.DataFrame(rows).reset_index(drop=True)
