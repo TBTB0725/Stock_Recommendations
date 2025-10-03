@@ -5,3 +5,6 @@ prophet
 scipy
 streamlit
 altair
+beautifulsoup4
+requests
+google-generativeai

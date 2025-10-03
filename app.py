@@ -12,6 +12,7 @@ import streamlit as st
 import altair as alt
 import json
 
+
 # Project modules: ensure app.py is in the same directory as these files
 from data import get_prices, to_returns
 from forecast import prophet_expected_returns
@@ -23,6 +24,8 @@ from optimize import (
     Constraints,
 )
 from report import evaluate_portfolio, compile_report
+from news import fetch_finviz_headlines, recent_headlines
+from sentiment import score_headlines_grouped, impact_to_annual_uplift
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
@@ -62,6 +65,26 @@ horizon = st.sidebar.selectbox(
     index=2,
     help="Default: 1W"
 )
+
+# === News Sentiment (LLM) ===
+st.sidebar.divider()
+use_news_sent = st.sidebar.checkbox("Use news sentiment (LLM)", value=False,
+    help="Fetch Finviz headlines → LLM scores ∈[-1,1] → map to return uplift and blend into μ.")
+
+news_days_back = 10
+news_per_ticker = 30
+news_blend_w = 0.5
+news_beta_h = 0.04
+llm_provider_note = "Gemini (set GEMINI_API_KEY)"
+
+if use_news_sent:
+    news_days_back = st.sidebar.slider("News lookback days", min_value=3, max_value=30, value=10, step=1)
+    news_per_ticker = st.sidebar.slider("Max headlines per ticker", min_value=5, max_value=100, value=30, step=5)
+    news_blend_w = st.sidebar.slider("Blend weight w (μ += w * uplift_ann)", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
+    news_beta_h = st.sidebar.slider("Impact→Horizon uplift β_h", min_value=0.01, max_value=0.10, value=0.04, step=0.005,
+        help="Strong positive news (impact=+1) ⇒ +β_h over forecast horizon; negative likewise.")
+    st.sidebar.caption(f"LLM provider: {llm_provider_note}")
+
 
 # === Advanced toggle (everything else lives behind toggles) ===
 st.sidebar.divider()
@@ -230,6 +253,13 @@ def _mu_prophet_cached(prices: pd.DataFrame,
         # Legacy fallback
         return prophet_expected_returns(prices, horizon=horizon)
 
+@st.cache_data(show_spinner=False)
+def _fetch_news_cached(tickers: List[str]) -> pd.DataFrame:
+    return fetch_finviz_headlines(tickers)
+
+@st.cache_data(show_spinner=False)
+def _score_news_cached(df_recent: pd.DataFrame) -> pd.DataFrame:
+    return score_headlines_grouped(df_recent)
 
 # --------------------------
 # Run button
@@ -278,6 +308,37 @@ if run:
                 None if cv_period  <= 0 else cv_period,
                 param_grid_json
             )
+        
+        # --- (Optional) News → LLM sentiment → blend into mu_annual ---
+        if use_news_sent:
+            with st.spinner("[3b] Fetching & scoring news (Finviz + LLM)..."):
+                df_news = _fetch_news_cached(tickers)
+                df_recent = recent_headlines(df_news, days_back=news_days_back, per_ticker=news_per_ticker)
+                if df_recent.empty:
+                    st.warning("No recent headlines found. Skipping news sentiment blend.")
+                else:
+                    df_scores = _score_news_cached(df_recent)  # columns: ticker, impact, n_headlines, last_ts
+                    # 对齐 tickers 顺序（缺失默认为 0）
+                    s_impact = df_scores.set_index("ticker")["impact"].reindex(tickers).fillna(0.0)
+
+                    # impact → 年化增量 uplift
+                    days = _H[horizon.upper()]
+                    uplift_ann = impact_to_annual_uplift(s_impact, horizon_days=days, beta_h=news_beta_h, tdpy=tdpy)
+
+                    # 融合：μ ← μ + w * uplift_ann
+                    mu_annual = (mu_annual + news_blend_w * uplift_ann).astype(float)
+
+                    # 展示：情绪面板
+                    with st.expander("📰 News Sentiment (per Ticker)", expanded=False):
+                        show_df = pd.DataFrame({
+                            "Impact [-1,1]": s_impact,
+                            "Annual Uplift (from impact)": uplift_ann,
+                        })
+                        st.dataframe(show_df.style.format({
+                            "Impact [-1,1]": "{:.2f}",
+                            "Annual Uplift (from impact)": "{:.2%}",
+                        }))
+
 
         # Annualized covariance Σ
         with st.spinner("[4/6] Estimating annualized covariance matrix Σ..."):
