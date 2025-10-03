@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 import altair as alt
 import json
+import sentiment  
 
 
 # Project modules: ensure app.py is in the same directory as these files
@@ -376,6 +377,44 @@ if run:
 
                 # 过滤最近 N 天 & 限制每只股票的条数
                 df_recent = recent_headlines(df_news, days_back=news_days_back, per_ticker=news_per_ticker)
+
+                # 🔬 One-click LLM self-test —— 必须在 df_recent 已经生成之后
+                if use_news_sent and debug_news:
+                    with st.expander("🔬 One-click LLM self-test", expanded=False):
+                        try:
+                            # 取当前输入的第一个 ticker（确保在 if run: 里，tickers 已经定义）
+                            if not tickers:
+                                st.warning("No tickers parsed.")
+                            else:
+                                t0 = tickers[0]
+                                df_t0 = df_recent[df_recent["ticker"] == t0].sort_values("published_at", ascending=False).head(5)
+                                if df_t0.empty:
+                                    st.info(f"No recent headlines for {t0} after filter.")
+                                else:
+                                    heads = "\n".join(f"- {h}" for h in df_t0["headline"].tolist())
+                                    prompt = sentiment._PROMPT_TMPL.format(headlines=heads)
+                                    st.markdown("**Prompt (first 5 headlines):**")
+                                    st.code(prompt, language="markdown")
+
+                                    raw = sentiment._gemini_call(prompt)        # 直接调用底层
+                                    st.markdown("**Raw from _gemini_call (as JSON string):**")
+                                    st.code(raw or "<EMPTY>", language="json")
+
+                                    # 显示底层调用路径/错误（来自 sentiment.LAST_CALL_DEBUG）
+                                    lcd = getattr(sentiment, "LAST_CALL_DEBUG", {})
+                                    st.write("LAST_CALL_DEBUG:", lcd)
+
+                                    # 试解析 JSON
+                                    try:
+                                        import json as _json
+                                        j = _json.loads(raw) if raw else {}
+                                        st.markdown("**Parsed JSON:**")
+                                        st.json(j)
+                                    except Exception as e:
+                                        st.error(f"json.loads failed: {e}")
+                        except Exception as e:
+                            st.error(f"Self-test error: {e}")
+
 
                 # ③ 过滤结果调试
                 with st.expander("🛠 Debug (Recent Filter)", expanded=False):
