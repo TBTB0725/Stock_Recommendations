@@ -260,8 +260,16 @@ def _fetch_news_cached(tickers: List[str]) -> pd.DataFrame:
     return fetch_finviz_headlines(tickers)
 
 @st.cache_data(show_spinner=False)
-def _score_news_cached(df_recent: pd.DataFrame) -> pd.DataFrame:
+def _score_news_cached(df_recent: pd.DataFrame,
+                       provider: str,
+                       key_fingerprint: str) -> pd.DataFrame:
+    """
+    把 provider & key 指纹纳入缓存键，避免‘无Key时的0分’被长期缓存。
+    """
+    # 参数只用于缓存键，不在函数体里用
+    _ = (provider, key_fingerprint)
     return score_headlines_grouped(df_recent)
+
 
 # --------------------------
 # Run button
@@ -343,7 +351,10 @@ if run:
                     st.warning("No recent headlines found. Skipping news sentiment blend.")
                 else:
                     # 评分
-                    df_scores = _score_news_cached(df_recent)  # columns: ticker, impact, n_headlines, last_ts
+                    provider = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
+                    key_fp = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "")[:8]  # 取前8位做指纹
+
+                    df_scores = _score_news_cached(df_recent, provider, key_fp)  # columns: ticker, impact, n_headlines, last_ts
                     # 若某些 ticker 没有分数，用 0 填充；并按当前 tickers 顺序对齐
                     s_impact = df_scores.set_index("ticker")["impact"].reindex(tickers).fillna(0.0)
 
