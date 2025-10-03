@@ -61,32 +61,56 @@ Headlines:
 
 def _gemini_call(prompt: str) -> str:
     """
-    强制 JSON 输出；优先用 resp.text，兜底拼接 parts。
+    强制让 Gemini 产出 JSON；同时兼容三种返回路径：
+    1) resp.text
+    2) candidates[].content.parts[].text
+    3) candidates[].content.parts[].inline_data (application/json, base64)
     """
+    import base64
+
     model = genai.GenerativeModel(
         "gemini-2.5-flash",
-        generation_config={"response_mime_type": "application/json"}  # ← 关键：直接要 JSON
+        generation_config={
+            "response_mime_type": "application/json",
+            "temperature": 0,
+            "candidate_count": 1,
+        },
     )
     resp = model.generate_content(prompt)
 
-    # 1) 最常见：直接拿纯文本（已是 JSON 字符串）
+    # 1) 最常见：直接 text
     if hasattr(resp, "text") and resp.text:
         return resp.text.strip()
 
-    # 2) 兜底：把第一条候选的所有文本片段拼起来
+    # 2/3) 遍历 parts，优先解码 inline_data (application/json)，其次拼 text
     try:
-        parts = resp.candidates[0].content.parts
-        txts = []
+        cand = resp.candidates[0]
+        parts = getattr(cand.content, "parts", []) or []
+        texts = []
         for p in parts:
-            if hasattr(p, "text") and p.text:
-                txts.append(p.text)
-        if txts:
-            return "\n".join(txts).strip()
+            # inline_data: base64 编码的二进制块
+            inline = getattr(p, "inline_data", None)
+            if inline and getattr(inline, "mime_type", "") == "application/json":
+                b64 = getattr(inline, "data", "") or ""
+                if b64:
+                    try:
+                        raw = base64.b64decode(b64).decode("utf-8", "ignore")
+                        if raw.strip():
+                            return raw.strip()
+                    except Exception:
+                        pass
+            # 纯文本块
+            t = getattr(p, "text", None)
+            if t:
+                texts.append(t)
+        if texts:
+            return "\n".join(texts).strip()
     except Exception:
         pass
 
-    # 3) 最兜底：把 resp 转成字符串
+    # 兜底：转字符串（用于 debug）
     return str(resp)
+
 
 
 def score_headlines_grouped(
