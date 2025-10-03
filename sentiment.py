@@ -6,10 +6,35 @@ from typing import Iterable, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-# 可选：OpenAI / Anthropic / Gemini
 _USE_PROVIDER = os.getenv("NEWS_LLM_PROVIDER", "gemini").lower()
 
-# --- Gemini (google-generativeai) ---
+def _extract_json(text: str) -> dict:
+    import json, re
+    s = text.strip()
+
+    # 1) 去掉围栏 ```json ... ``` 或 ``` ... ```
+    fence = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.S | re.I)
+    m = fence.match(s)
+    if m:
+        s = m.group(1).strip()
+
+    # 2) 直接尝试 json.loads
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+
+    # 3) 从文本中提取第一个 {...} 作为 JSON 尝试
+    m = re.search(r"\{.*\}", s, re.S)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            pass
+
+    # 4) 失败就返回空
+    return {}
+
 _use_gemini = False
 try:
     import google.generativeai as genai
@@ -20,7 +45,6 @@ try:
 except Exception:
     _use_gemini = False
 
-# 你也可以按需扩展 openai/anthropic，这里先聚焦 gemini 便于直接跑通
 
 _PROMPT_TMPL = """You are a finance expert.
 Given a list of short stock news headlines for one company, output ONE JSON line with fields:
@@ -38,7 +62,6 @@ Headlines:
 def _gemini_call(prompt: str) -> str:
     model = genai.GenerativeModel("gemini-2.5-flash")
     resp = model.generate_content(prompt)
-    # 取第一段文本
     return resp.candidates[0].content.parts[0].text.strip()
 
 def score_headlines_grouped(
@@ -64,11 +87,9 @@ def score_headlines_grouped(
             if _use_gemini:
                 text = _gemini_call(prompt)
             else:
-                # 如果没有可用的 provider/key，就返回 0 分，保证流程不断
                 text = '{"symbol": "", "name": "", "impact": 0.0}'
-            # 尝试解析 impact
-            import json
-            j = json.loads(text)
+
+            j = _extract_json(text)
             impact = float(j.get("impact", 0.0))
             impact = max(-1.0, min(1.0, impact))
         except Exception:
@@ -85,6 +106,7 @@ def score_headlines_grouped(
         time.sleep(sleep_sec)
 
     return pd.DataFrame(rows).reset_index(drop=True)
+    
 
 def impact_to_annual_uplift(
     impact: pd.Series,
@@ -92,12 +114,5 @@ def impact_to_annual_uplift(
     beta_h: float = 0.04,
     tdpy: int = 252,
 ) -> pd.Series:
-    """
-    将 impact ∈ [-1,1] 映射为 “预测期（horizon_days）的收益增量”：
-        uplift_h = impact * beta_h
-    再转换成年化增量：
-        uplift_ann = (1 + uplift_h) ** (tdpy / horizon_days) - 1
-    其中 beta_h 是“强正/负新闻在该预测期内的典型价差幅度”的缩放系数（可在 UI 中调）。
-    """
     uplift_h = impact.astype(float) * float(beta_h)
     return (1.0 + uplift_h) ** (tdpy / float(horizon_days)) - 1.0

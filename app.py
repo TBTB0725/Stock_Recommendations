@@ -71,6 +71,8 @@ st.sidebar.divider()
 use_news_sent = st.sidebar.checkbox("Use news sentiment (LLM)", value=False,
     help="Fetch Finviz headlines → LLM scores ∈[-1,1] → map to return uplift and blend into μ.")
 
+debug_news = st.sidebar.checkbox("Debug news sentiment", value=False)
+
 news_days_back = 10
 news_per_ticker = 30
 news_blend_w = 0.5
@@ -312,24 +314,48 @@ if run:
         # --- (Optional) News → LLM sentiment → blend into mu_annual ---
         if use_news_sent:
             with st.spinner("[3b] Fetching & scoring news (Finviz + LLM)..."):
+                import os
                 df_news = _fetch_news_cached(tickers)
+
+                # ① 环境与 Provider 调试
+                if debug_news:
+                    with st.expander("🛠 Debug (Env & Provider)", expanded=False):
+                        st.write("NEWS_LLM_PROVIDER =", os.getenv("NEWS_LLM_PROVIDER"))
+                        st.write("GEMINI_API_KEY set? ", bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")))
+
+                # ② 抓取结果调试
+                with st.expander("🛠 Debug (News Fetch)", expanded=False):
+                    st.write("tickers:", tickers)
+                    st.write("fetched rows:", 0 if df_news is None else len(df_news))
+                    if df_news is not None and not df_news.empty:
+                        st.dataframe(df_news.head(10))
+
+                # 过滤最近 N 天 & 限制每只股票的条数
                 df_recent = recent_headlines(df_news, days_back=news_days_back, per_ticker=news_per_ticker)
+
+                # ③ 过滤结果调试
+                with st.expander("🛠 Debug (Recent Filter)", expanded=False):
+                    st.write("after filter rows:", 0 if df_recent is None else len(df_recent))
+                    if df_recent is not None and not df_recent.empty:
+                        st.dataframe(df_recent.head(10))
+
                 if df_recent.empty:
                     st.warning("No recent headlines found. Skipping news sentiment blend.")
                 else:
+                    # 评分
                     df_scores = _score_news_cached(df_recent)  # columns: ticker, impact, n_headlines, last_ts
-                    # 对齐 tickers 顺序（缺失默认为 0）
+                    # 若某些 ticker 没有分数，用 0 填充；并按当前 tickers 顺序对齐
                     s_impact = df_scores.set_index("ticker")["impact"].reindex(tickers).fillna(0.0)
 
-                    # impact → 年化增量 uplift
+                    # impact → 年化增量
                     days = _H[horizon.upper()]
                     uplift_ann = impact_to_annual_uplift(s_impact, horizon_days=days, beta_h=news_beta_h, tdpy=tdpy)
 
-                    # 融合：μ ← μ + w * uplift_ann
+                    # μ ← μ + w * uplift_ann
                     mu_annual = (mu_annual + news_blend_w * uplift_ann).astype(float)
 
-                    # 展示：情绪面板
-                    with st.expander("📰 News Sentiment (per Ticker)", expanded=False):
+                    # 展示情绪表
+                    with st.expander("📰 News Sentiment (per Ticker)", expanded=True):
                         show_df = pd.DataFrame({
                             "Impact [-1,1]": s_impact,
                             "Annual Uplift (from impact)": uplift_ann,
