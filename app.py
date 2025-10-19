@@ -23,6 +23,8 @@ from optimize import (
     Constraints,
 )
 from report import evaluate_portfolio, compile_report
+from news import fetch_finviz_headlines
+from sentiment import score_titles, DEFAULT_MODEL as SENTI_DEFAULT_MODEL
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
@@ -66,6 +68,31 @@ horizon = st.sidebar.selectbox(
 # === Advanced toggle (everything else lives behind toggles) ===
 st.sidebar.divider()
 show_adv = st.sidebar.checkbox("Show advanced", value=False)
+
+# --------------------------
+# Sidebar — News & Sentiment
+# --------------------------
+st.sidebar.divider()
+st.sidebar.header("News & Sentiment")
+
+use_news = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=True)
+
+# 默认参数（与 news.py 对齐）
+news_lookback = st.sidebar.number_input(
+    "News lookback (days)", min_value=1, max_value=60, value=12, step=1
+)
+news_per_ticker = st.sidebar.slider(
+    "Max headlines per ticker (raw scrape)", min_value=10, max_value=200, value=100, step=10
+)
+news_final_cap = st.sidebar.slider(
+    "Final cap per ticker (after sorting)", min_value=5, max_value=100, value=25, step=5
+)
+news_model = st.sidebar.text_input(
+    "Sentiment model (OpenAI)",
+    value= "gpt-4.1-mini",
+    help="Must be a model that supports Chat Completions JSON mode."
+)
+
 
 # ---- defaults when advanced settings are hidden ----
 lookback_days = 504
@@ -230,6 +257,49 @@ def _mu_prophet_cached(prices: pd.DataFrame,
         # Legacy fallback
         return prophet_expected_returns(prices, horizon=horizon)
 
+@st.cache_data(show_spinner=False, ttl=600)
+def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_count: int, final_cap: int) -> pd.DataFrame:
+    """
+    Wraps fetch_finviz_headlines with Streamlit caching for UI.
+    """
+    df = fetch_finviz_headlines(
+        tickers=tickers,
+        lookback_days=lookback_days,
+        per_ticker_count=per_ticker_count,
+        final_cap=final_cap,
+        sleep_s=0.2,  # 适当降速，别太快
+    )
+    # 统一列顺序（便于显示）
+    cols = ["ticker", "datetime", "headline", "source", "url", "relatedTickers"]
+    return df[cols] if len(df) else df
+
+def _score_news_llm(df_news: pd.DataFrame, model_name: str) -> pd.DataFrame:
+    """
+    调用 sentiment.score_titles 给每条新闻打分，并合并回 df。
+    不做 cache（LLM 调用具有时效/成本属性），你也可以按需加 ttl 缓存。
+    """
+    if df_news is None or df_news.empty:
+        return df_news
+
+    items = df_news[["ticker", "headline"]].to_dict("records")
+    scored = score_titles(items, model_name=model_name)
+
+    # 对齐结果
+    impacts = []
+    reasons = []
+    raws = []
+    for i, row in enumerate(scored):
+        impacts.append(row.get("impact", 0.0))
+        ai_json = row.get("ai_json") or {}
+        reasons.append(ai_json.get("reason", ""))
+        raws.append(row.get("ai_raw", ""))
+
+    out = df_news.copy()
+    out["impact"] = impacts
+    out["reason"] = reasons
+    out["ai_raw"] = raws
+    return out
+
 
 # --------------------------
 # Run button
@@ -264,6 +334,89 @@ if run:
         # Price chart
         with st.expander("📉 Price chart (Adjusted Close)", expanded=False):
             st.line_chart(prices)
+        
+                # === News & Sentiment ===
+        if use_news:
+            if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
+                st.warning("OPENAI_API_KEY 未设置，无法进行情绪打分（仍可仅抓取新闻）。")
+
+            with st.spinner("[News] Fetching Finviz headlines..."):
+                df_news = _fetch_news_cached_ui(
+                    tickers=tickers,
+                    lookback_days=int(news_lookback),
+                    per_ticker_count=int(news_per_ticker),
+                    final_cap=int(news_final_cap),
+                )
+
+            if df_news is None or df_news.empty:
+                st.info("No headlines fetched.")
+            else:
+                with st.spinner("[News] Scoring sentiment with LLM..."):
+                    df_scored = _score_news_llm(df_news, model_name=news_model)
+
+                # 展示：按 ticker 分组的均值柱状图、Top 正/负新闻、完整新闻表
+                st.subheader("📰 News & Sentiment")
+
+                # 1) 平均 impact by Ticker
+                try:
+                    avg_impact = (
+                        df_scored.groupby("ticker", as_index=False)["impact"]
+                        .mean()
+                        .sort_values("impact", ascending=False)
+                    )
+                    ch_avg = (
+                        alt.Chart(avg_impact)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("ticker:N", title="Ticker", sort=None),
+                            y=alt.Y("impact:Q", title="Avg Impact", axis=alt.Axis(format=".2f")),
+                            tooltip=["ticker", alt.Tooltip("impact:Q", title="Avg Impact", format=".2f")],
+                        )
+                    )
+                    st.altair_chart(ch_avg, use_container_width=True)
+                except Exception:
+                    pass
+
+                # 2) Top 正/负新闻
+                cpos, cneg = st.columns(2)
+                with cpos:
+                    st.markdown("**Top Positive Headlines**")
+                    top_pos = df_scored.sort_values("impact", ascending=False).head(5)
+                    for _, r in top_pos.iterrows():
+                        st.markdown(
+                            f"- **{r['ticker']}** · {r['impact']:+.2f} — [{r['headline']}]({r['url']})"
+                            + (f" · _{r['reason']}_"
+                               if isinstance(r.get('reason'), str) and r['reason'] else "")
+                        )
+                with cneg:
+                    st.markdown("**Top Negative Headlines**")
+                    top_neg = df_scored.sort_values("impact", ascending=True).head(5)
+                    for _, r in top_neg.iterrows():
+                        st.markdown(
+                            f"- **{r['ticker']}** · {r['impact']:+.2f} — [{r['headline']}]({r['url']})"
+                            + (f" · _{r['reason']}_"
+                               if isinstance(r.get('reason'), str) and r['reason'] else "")
+                        )
+
+                # 3) 完整表格（可过滤）
+                with st.expander("🔎 Full Headlines Table", expanded=False):
+                    _tbl = df_scored.copy()
+                    # 友好显示时间
+                    if "datetime" in _tbl.columns and _tbl["datetime"].notna().any():
+                        _tbl["datetime"] = pd.to_datetime(_tbl["datetime"]).dt.tz_convert("UTC").dt.strftime("%Y-%m-%d %H:%M UTC")
+                    st.dataframe(
+                        _tbl[["ticker", "datetime", "impact", "headline", "reason", "source", "url"]],
+                        use_container_width=True,
+                    )
+
+                # 4) 下载 CSV
+                st.download_button(
+                    "Download News+Sentiment CSV",
+                    data=df_scored.to_csv(index=False).encode("utf-8"),
+                    file_name="news_sentiment.csv",
+                    mime="text/csv",
+                    key="dl_news_csv",
+                )
 
         # Daily log returns
         with st.spinner("[2/6] Computing daily log returns..."):

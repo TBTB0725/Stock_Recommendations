@@ -5,3 +5,6 @@ prophet
 scipy
 streamlit
 altair
+openai>=1.51
+beautifulsoup4>=4.12
+lxml>=5.3
