@@ -276,29 +276,50 @@ def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_cou
 def _score_news_llm(df_news: pd.DataFrame, model_name: str) -> pd.DataFrame:
     """
     调用 sentiment.score_titles 给每条新闻打分，并合并回 df。
-    不做 cache（LLM 调用具有时效/成本属性），你也可以按需加 ttl 缓存。
+    只保留展示所需列，避免任何组件隐式访问 ai_json['symbol'] 等键。
     """
     if df_news is None or df_news.empty:
         return df_news
 
     items = df_news[["ticker", "headline"]].to_dict("records")
-    scored = score_titles(items, model_name=model_name)
 
-    # 对齐结果
-    impacts = []
-    reasons = []
-    raws = []
-    for i, row in enumerate(scored):
-        impacts.append(row.get("impact", 0.0))
-        ai_json = row.get("ai_json") or {}
-        reasons.append(ai_json.get("reason", ""))
-        raws.append(row.get("ai_raw", ""))
+    try:
+        scored = score_titles(items, model_name=model_name)
+    except Exception as e:
+        # LLM 阶段异常则回退为 0 分，并继续渲染
+        st.warning(f"Sentiment scoring failed: {e}")
+        out = df_news.copy()
+        out["impact"] = 0.0
+        out["reason"] = ""
+        out["ai_raw"] = ""
+        return out
+
+    impacts, reasons, raws = [], [], []
+    for row in scored:
+        # impact 强制为数值
+        try:
+            impacts.append(float(row.get("impact", 0.0)))
+        except Exception:
+            impacts.append(0.0)
+
+        ai_json = row.get("ai_json")
+        if not isinstance(ai_json, dict):
+            ai_json = {}
+        reasons.append(str(ai_json.get("reason", "") or ""))
+        raws.append(str(row.get("ai_raw", "") or ""))
 
     out = df_news.copy()
-    out["impact"] = impacts
+    out["impact"] = pd.to_numeric(impacts, errors="coerce").fillna(0.0)
     out["reason"] = reasons
     out["ai_raw"] = raws
-    return out
+
+    # 仅返回需要的列，杜绝隐式展开内部 JSON
+    keep_cols = ["ticker", "datetime", "headline", "source", "url", "impact", "reason"]
+    for c in keep_cols:
+        if c not in out.columns:
+            out[c] = "" if c in ("headline","source","url","reason") else 0.0
+    return out[keep_cols]
+
 
 
 # --------------------------
@@ -353,6 +374,8 @@ if run:
             else:
                 with st.spinner("[News] Scoring sentiment with LLM..."):
                     df_scored = _score_news_llm(df_news, model_name=news_model)
+                
+                df_scored["impact"] = pd.to_numeric(df_scored.get("impact", 0.0), errors="coerce").fillna(0.0)
 
                 # 展示：按 ticker 分组的均值柱状图、Top 正/负新闻、完整新闻表
                 st.subheader("📰 News & Sentiment")
@@ -403,7 +426,11 @@ if run:
                     _tbl = df_scored.copy()
                     # 友好显示时间
                     if "datetime" in _tbl.columns and _tbl["datetime"].notna().any():
-                        _tbl["datetime"] = pd.to_datetime(_tbl["datetime"]).dt.tz_convert("UTC").dt.strftime("%Y-%m-%d %H:%M UTC")
+                        _tbl["datetime"] = (
+                            pd.to_datetime(_tbl["datetime"], utc=True, errors="coerce")
+                            .dt.tz_convert("UTC")
+                            .dt.strftime("%Y-%m-%d %H:%M UTC")
+                        )
                     st.dataframe(
                         _tbl[["ticker", "datetime", "impact", "headline", "reason", "source", "url"]],
                         use_container_width=True,
@@ -610,4 +637,4 @@ if run:
         st.caption("Note: Enabling Prophet tuning can be slow. Try fewer tickers / shorter lookback / shorter horizon, or reduce grid size.")
 
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.exception(e)
