@@ -335,7 +335,7 @@ if run:
         with st.expander("📉 Price chart (Adjusted Close)", expanded=False):
             st.line_chart(prices)
         
-                # === News & Sentiment ===
+        # === News & Sentiment ===
         if use_news:
             if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
                 st.warning("OPENAI_API_KEY 未设置，无法进行情绪打分（仍可仅抓取新闻）。")
