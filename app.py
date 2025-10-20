@@ -98,6 +98,32 @@ param_grid_json: Optional[str] = None  # keep None unless user enables & provide
 if show_adv:
     st.sidebar.subheader("Advanced: optional controls")
 
+    # --- News & Sentiment ---
+    use_news = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=True)
+    if use_news:
+
+        st.sidebar.header("News & Sentiment")
+
+
+        news_lookback = st.sidebar.number_input(
+            "News lookback (days)", min_value=1, max_value=60, value=12, step=1
+        )
+        news_per_ticker = st.sidebar.slider(
+            "Max headlines per ticker (raw scrape)", min_value=10, max_value=200, value=100, step=10
+        )
+        news_final_cap = st.sidebar.slider(
+            "Final cap per ticker (after sorting)", min_value=5, max_value=100, value=25, step=5
+        )
+        news_model = st.sidebar.text_input(
+            "Sentiment model (OpenAI)",
+            value=SENTI_DEFAULT_MODEL,  # 来自 sentiment.py
+            help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
+        )
+
+        openai_key = _get_openai_key()
+        if use_news and not openai_key:
+            st.sidebar.warning("OPENAI_API_KEY 未设置：将仅抓取新闻，不进行情绪打分。")
+
     # --- Lookback days（独立开关，折叠标签） ---
     if st.sidebar.checkbox("Lookback days", value=False):
         lookback_days = st.sidebar.number_input(
@@ -180,32 +206,6 @@ if show_adv:
                 st.sidebar.error(f"Invalid JSON: {e}")
                 param_grid_json = None
 
-# --------------------------
-# Sidebar — News & Sentiment
-# --------------------------
-st.sidebar.divider()
-st.sidebar.header("News & Sentiment")
-
-use_news = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=True)
-
-news_lookback = st.sidebar.number_input(
-    "News lookback (days)", min_value=1, max_value=60, value=12, step=1
-)
-news_per_ticker = st.sidebar.slider(
-    "Max headlines per ticker (raw scrape)", min_value=10, max_value=200, value=100, step=10
-)
-news_final_cap = st.sidebar.slider(
-    "Final cap per ticker (after sorting)", min_value=5, max_value=100, value=25, step=5
-)
-news_model = st.sidebar.text_input(
-    "Sentiment model (OpenAI)",
-    value=SENTI_DEFAULT_MODEL,  # 来自 sentiment.py
-    help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
-)
-
-openai_key = _get_openai_key()
-if use_news and not openai_key:
-    st.sidebar.warning("OPENAI_API_KEY 未设置：将仅抓取新闻，不进行情绪打分。")
 
 # --------------------------
 # Cached helpers
