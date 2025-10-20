@@ -112,13 +112,13 @@ if show_adv:
         )
         news_model = st.sidebar.text_input(
             "Sentiment model (OpenAI)",
-            value=SENTI_DEFAULT_MODEL,  # 来自 sentiment.py
+            value=SENTI_DEFAULT_MODEL,
             help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
         )
 
         openai_key = _get_openai_key()
         if use_news and not openai_key:
-            st.sidebar.warning("OPENAI_API_KEY 未设置：将仅抓取新闻，不进行情绪打分。")
+            st.sidebar.warning("No OPENAI_API_KEY")
 
     # --- Lookback days（独立开关，折叠标签） ---
     if st.sidebar.checkbox("Lookback days", value=False):
@@ -264,7 +264,7 @@ def _mu_prophet_cached(prices: pd.DataFrame,
 @st.cache_data(show_spinner=False, ttl=600)
 def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_count: int, final_cap: int) -> pd.DataFrame:
     """
-    包装 fetch_finviz_headlines，做 UI 缓存；返回统一列。
+    Wraps fetch_finviz_headlines to do UI caching and return unified columns.
     """
     df = fetch_finviz_headlines(
         tickers=tickers,
@@ -279,8 +279,7 @@ def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_cou
 
 def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[str]) -> pd.DataFrame:
     """
-    调用 sentiment.score_titles 给每条新闻打分，并合并回 df。
-    只保留展示需要的列，避免访问 ai_json 的内部键（从而规避你之前的 "symbol" 错误）。
+    Call sentiment.score_titles to score each article and merge it back into df.
     """
     if df_news is None or df_news.empty:
         return df_news
@@ -290,7 +289,6 @@ def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[st
     try:
         scored = score_titles(items, model_name=model_name, api_key = api_key)
     except Exception as e:
-        # 评分失败也不中断页面：全部置 0 分继续展示新闻
         st.warning(f"Sentiment scoring failed: {e}")
         out = df_news.copy()
         out["impact"] = 0.0
@@ -299,7 +297,6 @@ def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[st
 
     impacts, reasons = [], []
     for row in scored:
-        # impact 强制转数值
         try:
             impacts.append(float(row.get("impact", 0.0)))
         except Exception:
@@ -314,7 +311,6 @@ def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[st
     )
     out["reason"] = reasons
 
-    # 仅返回需要的列
     keep = ["ticker", "datetime", "headline", "source", "url", "impact", "reason"]
     for c in keep:
         if c not in out.columns:
@@ -354,99 +350,6 @@ if run:
         # Price chart
         with st.expander("📉 Price chart (Adjusted Close)", expanded=False):
             st.line_chart(prices)
-
-        # === News & Sentiment（独立展示，不参与当前的优化与评分） ===
-        if use_news:
-            if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
-                st.warning("OPENAI_API_KEY 未设置，将仅抓取新闻，不进行情绪打分。")
-
-            with st.spinner("[News] Fetching Finviz headlines..."):
-                df_news = _fetch_news_cached_ui(
-                    tickers=[t.strip().upper() for t in tickers if t.strip()],
-                    lookback_days=int(news_lookback),
-                    per_ticker_count=int(news_per_ticker),
-                    final_cap=int(news_final_cap),
-                )
-
-            st.subheader("📰 News & Sentiment")
-            if df_news is None or df_news.empty:
-                st.info("No headlines fetched.")
-            else:
-                # 打分（如果没有 API Key，函数内部也会容错并返回 0 分）
-                with st.spinner("[News] Scoring headlines..."):
-                    df_scored = _score_news_llm(df_news, model_name=news_model, api_key=openai_key)
-
-                # 统一 impact 类型
-                df_scored = pd.DataFrame(df_scored)  # 如果不确定它是不是 DataFrame，先包回去
-                df_scored.loc[:, "impact"] = (
-                    pd.to_numeric(df_scored["impact"], errors="coerce")
-                    .fillna(0.0)
-                )
-
-                # 1) 平均 impact by Ticker
-                try:
-                    avg_impact = (
-                        df_scored.groupby("ticker", as_index=False)["impact"]
-                        .mean()
-                        .sort_values("impact", ascending=False)
-                    )
-                    ch_avg = (
-                        alt.Chart(avg_impact)
-                        .mark_bar()
-                        .encode(
-                            x=alt.X("ticker:N", title="Ticker", sort=None),
-                            y=alt.Y("impact:Q", title="Avg Impact", axis=alt.Axis(format=".2f")),
-                            tooltip=["ticker", alt.Tooltip("impact:Q", title="Avg Impact", format=".2f")],
-                        )
-                    )
-                    st.altair_chart(ch_avg, use_container_width=True)
-                except Exception:
-                    pass
-
-                # 2) Top 正/负标题（各 5 条）
-                cpos, cneg = st.columns(2)
-                with cpos:
-                    st.markdown("**Top Positive Headlines**")
-                    top_pos = df_scored.sort_values("impact", ascending=False).head(5)
-                    for _, r in top_pos.iterrows():
-                        st.markdown(
-                            f"- **{r['ticker']}** · {r['impact']:+.2f} — "
-                            f"[{r['headline']}]({r['url']})"
-                            + (f" · _{r['reason']}_"
-                               if isinstance(r.get('reason'), str) and r['reason'] else "")
-                        )
-                with cneg:
-                    st.markdown("**Top Negative Headlines**")
-                    top_neg = df_scored.sort_values("impact", ascending=True).head(5)
-                    for _, r in top_neg.iterrows():
-                        st.markdown(
-                            f"- **{r['ticker']}** · {r['impact']:+.2f} — "
-                            f"[{r['headline']}]({r['url']})"
-                            + (f" · _{r['reason']}_"
-                               if isinstance(r.get('reason'), str) and r['reason'] else "")
-                        )
-
-                # 3) 完整表格（可筛选/下载）
-                with st.expander("🔎 Full Headlines Table", expanded=False):
-                    _tbl = df_scored.copy()
-                    if "datetime" in _tbl.columns and _tbl["datetime"].notna().any():
-                        _tbl["datetime"] = (
-                            pd.to_datetime(_tbl["datetime"], utc=True, errors="coerce")
-                            .dt.tz_convert("UTC")
-                            .dt.strftime("%Y-%m-%d %H:%M UTC")
-                        )
-                    st.dataframe(
-                        _tbl[["ticker", "datetime", "impact", "headline", "reason", "source", "url"]],
-                        use_container_width=True,
-                    )
-
-                st.download_button(
-                    "Download News+Sentiment CSV",
-                    data=df_scored.to_csv(index=False).encode("utf-8"),
-                    file_name="news_sentiment.csv",
-                    mime="text/csv",
-                    key="dl_news_csv",
-                )
 
         # Daily log returns
         with st.spinner("[2/6] Computing daily log returns..."):
@@ -539,6 +442,31 @@ if run:
         )
         st.altair_chart(chart_r, use_container_width=True)
 
+        st.markdown("#### Weights by Strategy (Stacked)")
+        wt_long = weights_tbl.reset_index().melt("index", var_name="Strategy", value_name="Weight")
+        wt_long.rename(columns={"index":"Ticker"}, inplace=True)
+        chart_w = (
+            alt.Chart(wt_long)
+            .mark_bar()
+            .encode(
+                x=alt.X("Strategy:N"),
+                y=alt.Y("Weight:Q", stack="normalize", title="Weight (stacked)", axis=alt.Axis(format="%")),
+                color=alt.Color("Ticker:N"),
+                tooltip=["Strategy", "Ticker", alt.Tooltip("Weight:Q", format=".2%")],
+            )
+        )
+        st.altair_chart(chart_w, use_container_width=True)
+
+
+        # Tables: Weights / Allocation
+        st.subheader("🧮 Weights / Allocation")
+        c3, c4 = st.columns(2)
+        with c3:
+            st.markdown("**Weights (rows=Ticker, cols=Strategy)**")
+            st.dataframe(weights_tbl.style.format("{:.2%}"))
+        with c4:
+            st.markdown("**Allocation ($, rows=Ticker, cols=Strategy)**")
+            st.dataframe(alloc_tbl.style.format("${:,.2f}"))
 
         st.subheader("📊 Summary (Portfolio Metrics)")
         percent_cols = [c for c in summary.columns if "sharpe" not in c.lower()]
@@ -583,32 +511,100 @@ if run:
                 )
             )
             st.altair_chart(chart_vol, use_container_width=True)
+        
+        # News & Sentiment
+        if use_news:
+            if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
+                st.warning("No OPENAI_API_KEY")
 
-        st.markdown("#### Weights by Strategy (Stacked)")
-        wt_long = weights_tbl.reset_index().melt("index", var_name="Strategy", value_name="Weight")
-        wt_long.rename(columns={"index":"Ticker"}, inplace=True)
-        chart_w = (
-            alt.Chart(wt_long)
-            .mark_bar()
-            .encode(
-                x=alt.X("Strategy:N"),
-                y=alt.Y("Weight:Q", stack="normalize", title="Weight (stacked)", axis=alt.Axis(format="%")),
-                color=alt.Color("Ticker:N"),
-                tooltip=["Strategy", "Ticker", alt.Tooltip("Weight:Q", format=".2%")],
-            )
-        )
-        st.altair_chart(chart_w, use_container_width=True)
+            with st.spinner("[News] Fetching Finviz headlines..."):
+                df_news = _fetch_news_cached_ui(
+                    tickers=[t.strip().upper() for t in tickers if t.strip()],
+                    lookback_days=int(news_lookback),
+                    per_ticker_count=int(news_per_ticker),
+                    final_cap=int(news_final_cap),
+                )
 
+            st.subheader("📰 News & Sentiment")
+            if df_news is None or df_news.empty:
+                st.info("No headlines fetched.")
+            else:
+                # 打分（如果没有 API Key，函数内部也会容错并返回 0 分）
+                with st.spinner("[News] Scoring headlines..."):
+                    df_scored = _score_news_llm(df_news, model_name=news_model, api_key=openai_key)
 
-        # Tables: Weights / Allocation
-        st.subheader("🧮 Weights / Allocation")
-        c3, c4 = st.columns(2)
-        with c3:
-            st.markdown("**Weights (rows=Ticker, cols=Strategy)**")
-            st.dataframe(weights_tbl.style.format("{:.2%}"))
-        with c4:
-            st.markdown("**Allocation ($, rows=Ticker, cols=Strategy)**")
-            st.dataframe(alloc_tbl.style.format("${:,.2f}"))
+                # 统一 impact 类型
+                df_scored = pd.DataFrame(df_scored)  # 如果不确定它是不是 DataFrame，先包回去
+                df_scored.loc[:, "impact"] = (
+                    pd.to_numeric(df_scored["impact"], errors="coerce")
+                    .fillna(0.0)
+                )
+
+                # 1) 平均 impact by Ticker
+                try:
+                    avg_impact = (
+                        df_scored.groupby("ticker", as_index=False)["impact"]
+                        .mean()
+                        .sort_values("impact", ascending=False)
+                    )
+                    ch_avg = (
+                        alt.Chart(avg_impact)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("ticker:N", title="Ticker", sort=None),
+                            y=alt.Y("impact:Q", title="Avg Impact", axis=alt.Axis(format=".2f")),
+                            tooltip=["ticker", alt.Tooltip("impact:Q", title="Avg Impact", format=".2f")],
+                        )
+                    )
+                    st.altair_chart(ch_avg, use_container_width=True)
+                except Exception:
+                    pass
+
+                # 2) Top 正/负标题（各 5 条）
+                cpos, cneg = st.columns(2)
+                with cpos:
+                    st.markdown("**Top Positive Headlines**")
+                    top_pos = df_scored.sort_values("impact", ascending=False).head(5)
+                    for _, r in top_pos.iterrows():
+                        st.markdown(
+                            f"- **{r['ticker']}** · {r['impact']:+.2f} — "
+                            f"[{r['headline']}]({r['url']})"
+                            + (f" · _{r['reason']}_"
+                               if isinstance(r.get('reason'), str) and r['reason'] else "")
+                        )
+                with cneg:
+                    st.markdown("**Top Negative Headlines**")
+                    top_neg = df_scored.sort_values("impact", ascending=True).head(5)
+                    for _, r in top_neg.iterrows():
+                        st.markdown(
+                            f"- **{r['ticker']}** · {r['impact']:+.2f} — "
+                            f"[{r['headline']}]({r['url']})"
+                            + (f" · _{r['reason']}_"
+                               if isinstance(r.get('reason'), str) and r['reason'] else "")
+                        )
+
+                # 3) 完整表格（可筛选/下载）
+                with st.expander("🔎 Full Headlines Table", expanded=False):
+                    _tbl = df_scored.copy()
+                    if "datetime" in _tbl.columns and _tbl["datetime"].notna().any():
+                        _tbl["datetime"] = (
+                            pd.to_datetime(_tbl["datetime"], utc=True, errors="coerce")
+                            .dt.tz_convert("UTC")
+                            .dt.strftime("%Y-%m-%d %H:%M UTC")
+                        )
+                    st.dataframe(
+                        _tbl[["ticker", "datetime", "impact", "headline", "reason", "source", "url"]],
+                        use_container_width=True,
+                    )
+
+                st.download_button(
+                    "Download News+Sentiment CSV",
+                    data=df_scored.to_csv(index=False).encode("utf-8"),
+                    file_name="news_sentiment.csv",
+                    mime="text/csv",
+                    key="dl_news_csv",
+                )
+
 
         # --------------------------
         # Downloads
