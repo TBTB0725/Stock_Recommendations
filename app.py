@@ -29,6 +29,14 @@ from sentiment import score_titles, DEFAULT_MODEL as SENTI_DEFAULT_MODEL
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
 
+def _get_openai_key() -> Optional[str]:
+    try:
+        if "OPENAI_API_KEY" in st.secrets:
+            return st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        pass
+    return os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI")
+
 # --------------------------
 # Streamlit Page Config
 # --------------------------
@@ -195,6 +203,9 @@ news_model = st.sidebar.text_input(
     help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
 )
 
+openai_key = _get_openai_key()
+if use_news and not openai_key:
+    st.sidebar.warning("OPENAI_API_KEY 未设置：将仅抓取新闻，不进行情绪打分。")
 
 # --------------------------
 # Cached helpers
@@ -270,7 +281,7 @@ def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_cou
     return df[cols] if len(df) else df
 
 
-def _score_news_llm(df_news: pd.DataFrame, model_name: str) -> pd.DataFrame:
+def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[str]) -> pd.DataFrame:
     """
     调用 sentiment.score_titles 给每条新闻打分，并合并回 df。
     只保留展示需要的列，避免访问 ai_json 的内部键（从而规避你之前的 "symbol" 错误）。
@@ -281,7 +292,7 @@ def _score_news_llm(df_news: pd.DataFrame, model_name: str) -> pd.DataFrame:
     items = df_news[["ticker", "headline"]].to_dict("records")
 
     try:
-        scored = score_titles(items, model_name=model_name)
+        scored = score_titles(items, model_name=model_name, api_key = api_key)
     except Exception as e:
         # 评分失败也不中断页面：全部置 0 分继续展示新闻
         st.warning(f"Sentiment scoring failed: {e}")
@@ -364,7 +375,7 @@ if run:
             else:
                 # 打分（如果没有 API Key，函数内部也会容错并返回 0 分）
                 with st.spinner("[News] Scoring headlines..."):
-                    df_scored = _score_news_llm(df_news, model_name=news_model)
+                    df_scored = _score_news_llm(df_news, model_name=news_model, api_key=openai_key)
 
                 # 统一 impact 类型
                 df_scored["impact"] = pd.to_numeric(df_scored["impact"], errors="coerce").fillna(0.0)
