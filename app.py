@@ -25,6 +25,7 @@ from optimize import (
 from report import evaluate_portfolio, compile_report
 from news import fetch_finviz_headlines
 from sentiment import score_titles, DEFAULT_MODEL as SENTI_DEFAULT_MODEL
+from agent.agent import StockAgent
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
@@ -47,6 +48,119 @@ st.set_page_config(
 
 st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
 st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
+
+
+# =============== Agent 模式渲染（不会破坏原有页面） ===============
+def _mount_agent_mode():
+    st.header("🤖 Agent Mode")
+
+    # 从 secrets or env 取 key（沿用你已有的逻辑）
+    key = _get_openai_key()
+    if key:
+        os.environ["OPENAI_API_KEY"] = key  # 供 agent 使用
+
+    # —— Agent 独立的轻量参数面板（默认值尽量贴合你现在的 app） ——
+    default_tickers_str = "AAPL, MSFT, AMZN, NVDA, GOOGL, TSLA, JPM, XOM, PFE, BHVN"
+    tickers_str_agent = st.text_input("Tickers (comma-separated)", value=default_tickers_str)
+    tickers = [t.strip().upper() for t in tickers_str_agent.split(",") if t.strip()]
+
+    left, right = st.columns(2)
+    with left:
+        horizon = st.selectbox("Forecast horizon", ["1W","1M","3M","6M"], index=1)  # 你的主站默认 1W；这里给 1M 更常用
+        capital = st.number_input("Total Capital (USD)", min_value=0.0, step=1000.0, value=100000.0)
+    with right:
+        rf = st.number_input("Risk-free rate (annual)", min_value=0.0, step=0.001, value=0.042, format="%.3f")
+        lookback_days = st.number_input("Price lookback (trading days)", min_value=60, max_value=1260, step=21, value=504)
+
+    # 情绪默认关闭；只有用户勾选才启用
+    include_sent = st.checkbox("Include news sentiment (optional)", value=False)
+    if include_sent:
+        news_col1, news_col2 = st.columns(2)
+        with news_col1:
+            per_ticker_count = st.slider("Headlines per ticker (raw)", 1, 50, 6)
+        with news_col2:
+            senti_cap = st.slider("Sentiment scoring cap (total)", 2, 50, 12)
+    else:
+        per_ticker_count, senti_cap = 0, 0  # 仅用于提示 LLM，可不使用
+
+    # 构造给 Agent 的自然语言指令（不包含 sentiment 时，不写“include sentiment”）
+    instruction = f"Analyze {', '.join(tickers)} for next {horizon}, optimize max_sharpe, then evaluate with ${int(capital)} capital and rf={rf}. Use about {int(lookback_days)} trading days of history."
+    if include_sent:
+        instruction += f" Include sentiment; for news roughly {int(per_ticker_count)} per ticker (cap total to {int(senti_cap)})."
+
+    st.caption("Instruction sent to the agent:")
+    st.code(instruction, language="markdown")
+
+    if st.button("▶️ Run Agent", use_container_width=True):
+        # 运行 Agent（关闭日志，避免打断 UI）
+        agent = StockAgent(model="gpt-4.1-mini", verbose=False)
+        out = agent.run(instruction)
+
+        # 展示计划（LLM 输出的思考产物）
+        st.subheader("🧠 Plan (LLM JSON)")
+        st.json(out["plan"], expanded=False)
+
+        # 从上下文里找到 evaluate_portfolio 的结果，做可视化
+        plan = out["plan"]; ctx = out["results"]
+        eval_names = [c["name"] for c in plan.get("calls", []) if c.get("tool") == "evaluate_portfolio_tool"]
+        pr = None
+        for nm in reversed(eval_names):
+            if nm in ctx:
+                pr = ctx[nm]
+                break
+
+        if pr is None:
+            st.warning("No evaluation result found in the plan execution.")
+            return
+
+        # 展示核心指标与权重（沿用你现有 app 的风格）
+        name = getattr(pr, "name", "Portfolio")
+        weights: pd.Series = getattr(pr, "weights", None)
+        mu = getattr(pr, "exp_return_annual", None)
+        sigma = getattr(pr, "volatility_annual", None)
+        sharpe = getattr(pr, "sharpe", None)
+        var_alpha = getattr(pr, "var_alpha", None)
+        var_value = getattr(pr, "var_value", None)
+        var_h = getattr(pr, "var_horizon_days", None)
+
+        st.markdown(f"### 📦 {name}")
+        if isinstance(weights, pd.Series):
+            df_w = weights.to_frame("Weight").sort_values("Weight", ascending=False)
+            st.dataframe(df_w.style.format({"Weight": "{:.2%}"}), use_container_width=True)
+
+            # 简单条形图
+            import altair as alt
+            ch_w = (
+                alt.Chart(df_w.reset_index().rename(columns={"index":"Ticker"}))
+                .mark_bar()
+                .encode(
+                    x=alt.X("Ticker:N", sort=None),
+                    y=alt.Y("Weight:Q", axis=alt.Axis(format="%")),
+                    tooltip=["Ticker", alt.Tooltip("Weight:Q", format=".2%")],
+                )
+            )
+            st.altair_chart(ch_w, use_container_width=True)
+
+        cols = st.columns(4)
+        if mu is not None: cols[0].metric("Annualized μ", f"{mu:.2%}")
+        if sigma is not None: cols[1].metric("Annualized σ", f"{sigma:.2%}")
+        if sharpe is not None: cols[2].metric("Sharpe", f"{sharpe:.2f}")
+        if var_value is not None and var_alpha is not None and var_h is not None:
+            conf = int((1 - var_alpha) * 100)
+            cols[3].metric(f"VaR {conf}% / {var_h}d", f"{var_value:.2%}")
+
+        # 步骤摘要（轻量）
+        st.markdown("### 🗂️ Steps")
+        st.json({"steps": list(out["summary"].keys())}, expanded=False)
+
+
+# === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
+agent_mode = st.sidebar.toggle("🤖 Agent mode", value=False, help="开启后仅显示智能体面板，不影响原有功能")
+if agent_mode:
+    _mount_agent_mode()
+    st.stop()  # 关键：直接终止后续原页面渲染
+# ==============================================================
+
 
 # --------------------------
 # Sidebar — Parameters
