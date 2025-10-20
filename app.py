@@ -23,6 +23,8 @@ from optimize import (
     Constraints,
 )
 from report import evaluate_portfolio, compile_report
+from news import fetch_finviz_headlines
+from sentiment import score_titles, DEFAULT_MODEL as SENTI_DEFAULT_MODEL
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
@@ -170,6 +172,28 @@ if show_adv:
                 st.sidebar.error(f"Invalid JSON: {e}")
                 param_grid_json = None
 
+# --------------------------
+# Sidebar — News & Sentiment
+# --------------------------
+st.sidebar.divider()
+st.sidebar.header("News & Sentiment")
+
+use_news = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=True)
+
+news_lookback = st.sidebar.number_input(
+    "News lookback (days)", min_value=1, max_value=60, value=12, step=1
+)
+news_per_ticker = st.sidebar.slider(
+    "Max headlines per ticker (raw scrape)", min_value=10, max_value=200, value=100, step=10
+)
+news_final_cap = st.sidebar.slider(
+    "Final cap per ticker (after sorting)", min_value=5, max_value=100, value=25, step=5
+)
+news_model = st.sidebar.text_input(
+    "Sentiment model (OpenAI)",
+    value=SENTI_DEFAULT_MODEL,  # 来自 sentiment.py
+    help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
+)
 
 
 # --------------------------
@@ -230,6 +254,62 @@ def _mu_prophet_cached(prices: pd.DataFrame,
         # Legacy fallback
         return prophet_expected_returns(prices, horizon=horizon)
 
+@st.cache_data(show_spinner=False, ttl=600)
+def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_count: int, final_cap: int) -> pd.DataFrame:
+    """
+    包装 fetch_finviz_headlines，做 UI 缓存；返回统一列。
+    """
+    df = fetch_finviz_headlines(
+        tickers=tickers,
+        lookback_days=lookback_days,
+        per_ticker_count=per_ticker_count,
+        final_cap=final_cap,
+        sleep_s=0.2,  # 降速一些，避免过快
+    )
+    cols = ["ticker", "datetime", "headline", "source", "url", "relatedTickers"]
+    return df[cols] if len(df) else df
+
+
+def _score_news_llm(df_news: pd.DataFrame, model_name: str) -> pd.DataFrame:
+    """
+    调用 sentiment.score_titles 给每条新闻打分，并合并回 df。
+    只保留展示需要的列，避免访问 ai_json 的内部键（从而规避你之前的 "symbol" 错误）。
+    """
+    if df_news is None or df_news.empty:
+        return df_news
+
+    items = df_news[["ticker", "headline"]].to_dict("records")
+
+    try:
+        scored = score_titles(items, model_name=model_name)
+    except Exception as e:
+        # 评分失败也不中断页面：全部置 0 分继续展示新闻
+        st.warning(f"Sentiment scoring failed: {e}")
+        out = df_news.copy()
+        out["impact"] = 0.0
+        out["reason"] = ""
+        return out[["ticker", "datetime", "headline", "source", "url", "impact", "reason"]]
+
+    impacts, reasons = [], []
+    for row in scored:
+        # impact 强制转数值
+        try:
+            impacts.append(float(row.get("impact", 0.0)))
+        except Exception:
+            impacts.append(0.0)
+        ai_json = row.get("ai_json") if isinstance(row.get("ai_json"), dict) else {}
+        reasons.append(str(ai_json.get("reason", "") or ""))
+
+    out = df_news.copy()
+    out["impact"] = pd.to_numeric(impacts, errors="coerce").fillna(0.0)
+    out["reason"] = reasons
+
+    # 仅返回需要的列
+    keep = ["ticker", "datetime", "headline", "source", "url", "impact", "reason"]
+    for c in keep:
+        if c not in out.columns:
+            out[c] = "" if c in ("headline", "source", "url", "reason") else 0.0
+    return out[keep]
 
 # --------------------------
 # Run button
@@ -264,6 +344,95 @@ if run:
         # Price chart
         with st.expander("📉 Price chart (Adjusted Close)", expanded=False):
             st.line_chart(prices)
+
+        # === News & Sentiment（独立展示，不参与当前的优化与评分） ===
+        if use_news:
+            if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
+                st.warning("OPENAI_API_KEY 未设置，将仅抓取新闻，不进行情绪打分。")
+
+            with st.spinner("[News] Fetching Finviz headlines..."):
+                df_news = _fetch_news_cached_ui(
+                    tickers=[t.strip().upper() for t in tickers if t.strip()],
+                    lookback_days=int(news_lookback),
+                    per_ticker_count=int(news_per_ticker),
+                    final_cap=int(news_final_cap),
+                )
+
+            st.subheader("📰 News & Sentiment")
+            if df_news is None or df_news.empty:
+                st.info("No headlines fetched.")
+            else:
+                # 打分（如果没有 API Key，函数内部也会容错并返回 0 分）
+                with st.spinner("[News] Scoring headlines..."):
+                    df_scored = _score_news_llm(df_news, model_name=news_model)
+
+                # 统一 impact 类型
+                df_scored["impact"] = pd.to_numeric(df_scored["impact"], errors="coerce").fillna(0.0)
+
+                # 1) 平均 impact by Ticker
+                try:
+                    avg_impact = (
+                        df_scored.groupby("ticker", as_index=False)["impact"]
+                        .mean()
+                        .sort_values("impact", ascending=False)
+                    )
+                    ch_avg = (
+                        alt.Chart(avg_impact)
+                        .mark_bar()
+                        .encode(
+                            x=alt.X("ticker:N", title="Ticker", sort=None),
+                            y=alt.Y("impact:Q", title="Avg Impact", axis=alt.Axis(format=".2f")),
+                            tooltip=["ticker", alt.Tooltip("impact:Q", title="Avg Impact", format=".2f")],
+                        )
+                    )
+                    st.altair_chart(ch_avg, use_container_width=True)
+                except Exception:
+                    pass
+
+                # 2) Top 正/负标题（各 5 条）
+                cpos, cneg = st.columns(2)
+                with cpos:
+                    st.markdown("**Top Positive Headlines**")
+                    top_pos = df_scored.sort_values("impact", ascending=False).head(5)
+                    for _, r in top_pos.iterrows():
+                        st.markdown(
+                            f"- **{r['ticker']}** · {r['impact']:+.2f} — "
+                            f"[{r['headline']}]({r['url']})"
+                            + (f" · _{r['reason']}_"
+                               if isinstance(r.get('reason'), str) and r['reason'] else "")
+                        )
+                with cneg:
+                    st.markdown("**Top Negative Headlines**")
+                    top_neg = df_scored.sort_values("impact", ascending=True).head(5)
+                    for _, r in top_neg.iterrows():
+                        st.markdown(
+                            f"- **{r['ticker']}** · {r['impact']:+.2f} — "
+                            f"[{r['headline']}]({r['url']})"
+                            + (f" · _{r['reason']}_"
+                               if isinstance(r.get('reason'), str) and r['reason'] else "")
+                        )
+
+                # 3) 完整表格（可筛选/下载）
+                with st.expander("🔎 Full Headlines Table", expanded=False):
+                    _tbl = df_scored.copy()
+                    if "datetime" in _tbl.columns and _tbl["datetime"].notna().any():
+                        _tbl["datetime"] = (
+                            pd.to_datetime(_tbl["datetime"], utc=True, errors="coerce")
+                            .dt.tz_convert("UTC")
+                            .dt.strftime("%Y-%m-%d %H:%M UTC")
+                        )
+                    st.dataframe(
+                        _tbl[["ticker", "datetime", "impact", "headline", "reason", "source", "url"]],
+                        use_container_width=True,
+                    )
+
+                st.download_button(
+                    "Download News+Sentiment CSV",
+                    data=df_scored.to_csv(index=False).encode("utf-8"),
+                    file_name="news_sentiment.csv",
+                    mime="text/csv",
+                    key="dl_news_csv",
+                )
 
         # Daily log returns
         with st.spinner("[2/6] Computing daily log returns..."):
