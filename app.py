@@ -54,26 +54,23 @@ st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / 
 def _mount_agent_mode():
     st.header("🤖 Agent Mode")
 
-    # 从 secrets or env 取 key（沿用你已有的逻辑）
     key = _get_openai_key()
     if key:
-        os.environ["OPENAI_API_KEY"] = key  # 供 agent 使用
+        os.environ["OPENAI_API_KEY"] = key
 
-    # —— Agent 独立的轻量参数面板（默认值尽量贴合你现在的 app） ——
     default_tickers_str = "AAPL, MSFT, AMZN, NVDA, GOOGL, TSLA, JPM, XOM, PFE, BHVN"
     tickers_str_agent = st.text_input("Tickers (comma-separated)", value=default_tickers_str)
     tickers = [t.strip().upper() for t in tickers_str_agent.split(",") if t.strip()]
 
     left, right = st.columns(2)
     with left:
-        horizon = st.selectbox("Forecast horizon", ["1W","1M","3M","6M"], index=1)  # 你的主站默认 1W；这里给 1M 更常用
+        horizon = st.selectbox("Forecast horizon", ["1W","1M","3M","6M"], index=1)
         capital = st.number_input("Total Capital (USD)", min_value=0.0, step=1000.0, value=100000.0)
     with right:
         rf = st.number_input("Risk-free rate (annual)", min_value=0.0, step=0.001, value=0.042, format="%.3f")
         lookback_days = st.number_input("Price lookback (trading days)", min_value=60, max_value=1260, step=21, value=504)
 
-    # 情绪默认关闭；只有用户勾选才启用
-    include_sent = st.checkbox("Include news sentiment", value=False)
+    include_sent = st.checkbox("Include news sentiment (optional)", value=False)
     if include_sent:
         news_col1, news_col2 = st.columns(2)
         with news_col1:
@@ -81,22 +78,54 @@ def _mount_agent_mode():
         with news_col2:
             senti_cap = st.slider("Sentiment scoring cap (total)", 2, 50, 12)
     else:
-        per_ticker_count, senti_cap = 0, 0  # 仅用于提示 LLM，可不使用
+        per_ticker_count, senti_cap = 0, 0
 
-    # 构造给 Agent 的自然语言指令（不包含 sentiment 时，不写“include sentiment”）
-    instruction = f"Analyze {', '.join(tickers)} for next {horizon}, optimize max_sharpe, then evaluate with ${int(capital)} capital and rf={rf}. Use about {int(lookback_days)} trading days of history."
-    if include_sent:
-        instruction += f" Include sentiment; for news roughly {int(per_ticker_count)} per ticker (cap total to {int(senti_cap)})."
+    # === 新增：用户自定义 Prompt 开关 ===
+    custom_prompt_on = st.checkbox("✍️ Enable custom instruction prompt", value=False)
+    if custom_prompt_on:
+        # 给一个可编辑模板（用户可完全改写）
+        default_instruction = (
+            "Analyze AAPL and NVDA for next 1M. "
+            "Do NOT include sentiment unless I asked. "
+            "Optimize max_sharpe and evaluate with $100000 capital and rf=0.042. "
+            "Use about 504 trading days of history."
+        )
+        instruction = st.text_area("Instruction to Agent", value=default_instruction, height=140)
+    else:
+        # 仍按控件生成（不启用情绪时不写 include sentiment）
+        instruction = (
+            f"Analyze {', '.join(tickers)} for next {horizon}, optimize max_sharpe, "
+            f"then evaluate with ${int(capital)} capital and rf={rf}. "
+            f"Use about {int(lookback_days)} trading days of history."
+        )
+        if include_sent:
+            instruction += f" Include sentiment; for news roughly {int(per_ticker_count)} per ticker (cap total to {int(senti_cap)})."
 
-    st.caption("Instruction sent to the agent:")
+    # === 新增：可选自定义 System Prompt（覆盖 Agent 规则） ===
+    custom_sys_on = st.checkbox("🧩 Advanced: custom System Prompt", value=False)
+    system_prompt_value = None
+    if custom_sys_on:
+        system_prompt_value = st.text_area(
+            "System Prompt (advanced)",
+            value=(
+                "You are a financial analysis agent. Decide tools and order. "
+                "Always return a single JSON plan with `calls` and unique `name` for each step. "
+                "Use fetch_prices → to_returns → forecast → risk → (optional news+sentiment) → optimize → evaluate."
+            ),
+            height=160
+        )
+
+    st.caption("Instruction that will be sent:")
     st.code(instruction, language="markdown")
 
     if st.button("▶️ Run Agent", use_container_width=True):
-        # 运行 Agent（关闭日志，避免打断 UI）
-        agent = StockAgent(model="gpt-4.1-mini", verbose=False)
+        # 传入自定义 system prompt（如未启用则为 None）
+        agent = StockAgent(model="gpt-4.1-mini", verbose=False, system_prompt=system_prompt_value)
         out = agent.run(instruction)
 
-        # 从上下文里找到 evaluate_portfolio 的结果，做可视化
+        st.subheader("🧠 Plan (LLM JSON)")
+        st.json(out["plan"], expanded=False)
+
         plan = out["plan"]; ctx = out["results"]
         eval_names = [c["name"] for c in plan.get("calls", []) if c.get("tool") == "evaluate_portfolio_tool"]
         pr = None
@@ -109,7 +138,6 @@ def _mount_agent_mode():
             st.warning("No evaluation result found in the plan execution.")
             return
 
-        # 展示核心指标与权重（沿用你现有 app 的风格）
         name = getattr(pr, "name", "Portfolio")
         weights: pd.Series = getattr(pr, "weights", None)
         mu = getattr(pr, "exp_return_annual", None)
@@ -124,7 +152,6 @@ def _mount_agent_mode():
             df_w = weights.to_frame("Weight").sort_values("Weight", ascending=False)
             st.dataframe(df_w.style.format({"Weight": "{:.2%}"}), use_container_width=True)
 
-            # 简单条形图
             import altair as alt
             ch_w = (
                 alt.Chart(df_w.reset_index().rename(columns={"index":"Ticker"}))
@@ -145,6 +172,8 @@ def _mount_agent_mode():
             conf = int((1 - var_alpha) * 100)
             cols[3].metric(f"VaR {conf}% / {var_h}d", f"{var_value:.2%}")
 
+        st.markdown("### 🗂️ Steps")
+        st.json({"steps": list(out["summary"].keys())}, expanded=False)
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
 agent_mode = st.sidebar.toggle("🤖 Agent mode", value=False, help="开启后仅显示智能体面板，不影响原有功能")

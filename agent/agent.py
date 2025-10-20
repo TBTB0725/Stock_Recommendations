@@ -347,10 +347,11 @@ def _resolve_arg(value: Any, ctx: Dict[str, Any]) -> Any:
     return value
 
 class StockAgent:
-    def __init__(self, model: str = DEFAULT_MODEL, verbose: bool = True):
+    def __init__(self, model: str = DEFAULT_MODEL, verbose: bool = True, system_prompt: Optional[str] = None):
         self.model = model
         self.verbose = verbose
         self.client = OpenAI()  # 依赖环境变量 OPENAI_API_KEY 或 OPENAI
+        self.system_prompt = system_prompt or SYSTEM_PROMPT 
 
     def _log(self, msg: str):
         if self.verbose:
@@ -365,7 +366,7 @@ class StockAgent:
             temperature=0.2,
             response_format={"type": "json_object"},
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": self.system_prompt},
                 {"role": "system", "content": "HINTS: " + json.dumps(hints)},
                 {"role": "user", "content": instruction},
             ],
