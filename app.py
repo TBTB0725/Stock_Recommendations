@@ -101,10 +101,6 @@ if show_adv:
     # --- News & Sentiment ---
     use_news = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=True)
     if use_news:
-
-        st.sidebar.header("News & Sentiment")
-
-
         news_lookback = st.sidebar.number_input(
             "News lookback (days)", min_value=1, max_value=60, value=12, step=1
         )
