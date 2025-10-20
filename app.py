@@ -101,26 +101,12 @@ def _mount_agent_mode():
         if include_sent:
             instruction += f" Include sentiment; for news roughly {int(per_ticker_count)} per ticker (cap total to {int(senti_cap)})."
 
-    # === 新增：可选自定义 System Prompt（覆盖 Agent 规则） ===
-    custom_sys_on = st.checkbox("🧩 Advanced: custom System Prompt", value=False)
-    system_prompt_value = None
-    if custom_sys_on:
-        system_prompt_value = st.text_area(
-            "System Prompt (advanced)",
-            value=(
-                "You are a financial analysis agent. Decide tools and order. "
-                "Always return a single JSON plan with `calls` and unique `name` for each step. "
-                "Use fetch_prices → to_returns → forecast → risk → (optional news+sentiment) → optimize → evaluate."
-            ),
-            height=160
-        )
-
     st.caption("Instruction that will be sent:")
     st.code(instruction, language="markdown")
 
     if st.button("▶️ Run Agent", use_container_width=True):
         # 传入自定义 system prompt（如未启用则为 None）
-        agent = StockAgent(model="gpt-4.1-mini", verbose=False, system_prompt=system_prompt_value)
+        agent = StockAgent(model="gpt-4.1-mini", verbose=False)
         out = agent.run(instruction)
 
         st.subheader("🧠 Plan (LLM JSON)")
@@ -171,9 +157,6 @@ def _mount_agent_mode():
         if var_value is not None and var_alpha is not None and var_h is not None:
             conf = int((1 - var_alpha) * 100)
             cols[3].metric(f"VaR {conf}% / {var_h}d", f"{var_value:.2%}")
-
-        st.markdown("### 🗂️ Steps")
-        st.json({"steps": list(out["summary"].keys())}, expanded=False)
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
 agent_mode = st.sidebar.toggle("🤖 Agent mode", value=False, help="开启后仅显示智能体面板，不影响原有功能")
