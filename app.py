@@ -312,7 +312,10 @@ def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[st
         reasons.append(str(ai_json.get("reason", "") or ""))
 
     out = df_news.copy()
-    out["impact"] = pd.to_numeric(impacts, errors="coerce").fillna(0.0)
+    out["impact"] = (
+        pd.to_numeric(pd.Series(impacts), errors="coerce")
+        .fillna(0.0)
+    )
     out["reason"] = reasons
 
     # 仅返回需要的列
@@ -378,7 +381,11 @@ if run:
                     df_scored = _score_news_llm(df_news, model_name=news_model, api_key=openai_key)
 
                 # 统一 impact 类型
-                df_scored["impact"] = pd.to_numeric(df_scored["impact"], errors="coerce").fillna(0.0)
+                df_scored = pd.DataFrame(df_scored)  # 如果不确定它是不是 DataFrame，先包回去
+                df_scored.loc[:, "impact"] = (
+                    pd.to_numeric(df_scored["impact"], errors="coerce")
+                    .fillna(0.0)
+                )
 
                 # 1) 平均 impact by Ticker
                 try:
