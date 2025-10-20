@@ -30,147 +30,6 @@ from agent.agent import StockAgent
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
 
-def _render_agent_outputs(plan: dict, ctx: dict):
-    """
-    根据已执行的工具结果，动态渲染界面。
-    - 有 evaluate_portfolio → 显示指标与权重
-    - 仅有 optimize → 显示权重
-    - 有 forecast → 显示 μ 柱状图
-    - 有 risk → 显示协方差热图/表
-    - 有 fetch_prices/to_returns → 显示价格/收益图
-    """
-    import altair as alt
-    import pandas as pd
-    import numpy as np
-    import streamlit as st
-
-    def names_of(tool):
-        return [c["name"] for c in plan.get("calls", []) if c.get("tool") == tool]
-
-    name_eval   = next((n for n in reversed(names_of("evaluate_portfolio_tool")) if n in ctx), None)
-    name_opt    = next((n for n in reversed(names_of("optimize_tool")) if n in ctx), None)
-    name_mu     = next((n for n in reversed(names_of("forecast_tool")) if n in ctx), None)
-    name_sigma  = next((n for n in reversed(names_of("risk_tool")) if n in ctx), None)
-    name_prices = next((n for n in reversed(names_of("fetch_prices_tool")) if n in ctx), None)
-    name_rets   = next((n for n in reversed(names_of("to_returns_tool")) if n in ctx), None)
-
-    shown_any = False
-
-    # 1) 评估结果（最完整）
-    if name_eval:
-        pr = ctx[name_eval]
-        name = getattr(pr, "name", "Portfolio")
-        weights: pd.Series = getattr(pr, "weights", None)
-        mu = getattr(pr, "exp_return_annual", None)
-        sigma = getattr(pr, "volatility_annual", None)
-        sharpe = getattr(pr, "sharpe", None)
-        var_alpha = getattr(pr, "var_alpha", None)
-        var_value = getattr(pr, "var_value", None)
-        var_h = getattr(pr, "var_horizon_days", None)
-
-        st.markdown(f"### 📦 {name}")
-        if isinstance(weights, pd.Series):
-            df_w = weights.to_frame("Weight").sort_values("Weight", ascending=False)
-            st.dataframe(df_w.style.format({"Weight": "{:.2%}"}), use_container_width=True)
-
-            ch = (
-                alt.Chart(df_w.reset_index().rename(columns={"index":"Ticker"}))
-                .mark_bar()
-                .encode(
-                    x=alt.X("Ticker:N", sort=None),
-                    y=alt.Y("Weight:Q", axis=alt.Axis(format="%")),
-                    tooltip=["Ticker", alt.Tooltip("Weight:Q", format=".2%")],
-                )
-            )
-            st.altair_chart(ch, use_container_width=True)
-
-        cols = st.columns(4)
-        if mu is not None:    cols[0].metric("Annualized μ", f"{mu:.2%}")
-        if sigma is not None: cols[1].metric("Annualized σ", f"{sigma:.2%}")
-        if sharpe is not None:cols[2].metric("Sharpe", f"{sharpe:.2f}")
-        if (var_value is not None) and (var_alpha is not None) and (var_h is not None):
-            cols[3].metric(f"VaR {int((1-var_alpha)*100)}% / {var_h}d", f"{var_value:.2%}")
-        shown_any = True
-
-    # 2) 仅有优化（显示权重）
-    if (not shown_any) and name_opt:
-        w = ctx[name_opt]
-        if isinstance(w, np.ndarray):
-            st.subheader("🧮 Optimized Weights")
-            # 尝试从 μ/Σ/价格中推断 ticker 顺序
-            tickers = None
-            if name_mu and isinstance(ctx[name_mu], pd.Series):
-                tickers = list(ctx[name_mu].index)
-            elif name_sigma and isinstance(ctx[name_sigma], pd.DataFrame):
-                tickers = list(ctx[name_sigma].columns)
-            elif name_prices and isinstance(ctx[name_prices], pd.DataFrame):
-                tickers = list(ctx[name_prices].columns)
-
-            if tickers and len(tickers) == len(w):
-                df_w = pd.DataFrame({"Ticker": tickers, "Weight": w}).sort_values("Weight", ascending=False)
-            else:
-                df_w = pd.DataFrame({"Ticker": [f"A{i+1}" for i in range(len(w))], "Weight": w}).sort_values("Weight", ascending=False)
-
-            st.dataframe(df_w.style.format({"Weight": "{:.2%}"}), use_container_width=True)
-            shown_any = True
-
-    # 3) 仅有预测 μ（条形图）
-    if name_mu and isinstance(ctx[name_mu], pd.Series):
-        st.subheader("📈 Forecasted Annualized μ")
-        s = ctx[name_mu].sort_values(ascending=False)
-        df = s.reset_index(); df.columns = ["Ticker", "Mu"]
-        ch = (
-            alt.Chart(df)
-            .mark_bar()
-            .encode(
-                x=alt.X("Ticker:N", sort=None),
-                y=alt.Y("Mu:Q", axis=alt.Axis(format="%")),
-                tooltip=["Ticker", alt.Tooltip("Mu:Q", format=".2%")],
-            )
-        )
-        st.altair_chart(ch, use_container_width=True)
-        shown_any = True
-
-    # 4) 协方差 Σ（只问 variance 的场景）
-    if name_sigma and isinstance(ctx[name_sigma], pd.DataFrame):
-        st.subheader("🧯 Covariance Matrix Σ (annualized)")
-        Sigma = ctx[name_sigma].copy()
-        st.dataframe(Sigma.style.format("{:.2e}"), use_container_width=True)
-
-        # 热图（可选）
-        try:
-            df_hm = Sigma.copy()
-            df_hm = df_hm.reset_index().melt(id_vars=df_hm.index.name or "index", var_name="Col", value_name="Val")
-            df_hm.rename(columns={df_hm.columns[0]: "Row"}, inplace=True)
-            ch = (
-                alt.Chart(df_hm)
-                .mark_rect()
-                .encode(
-                    x=alt.X("Row:N", sort=None),
-                    y=alt.Y("Col:N", sort=None),
-                    color=alt.Color("Val:Q", title="Cov"),
-                    tooltip=["Row", "Col", alt.Tooltip("Val:Q", format=".2e")],
-                )
-            )
-            st.altair_chart(ch, use_container_width=True)
-        except Exception:
-            pass
-        shown_any = True
-
-    # 5) 价格/收益
-    if (not shown_any) and name_prices and isinstance(ctx[name_prices], pd.DataFrame):
-        st.subheader("📉 Prices (Adjusted Close)")
-        st.line_chart(ctx[name_prices])
-        shown_any = True
-
-    if name_rets and isinstance(ctx[name_rets], pd.DataFrame):
-        st.subheader("↕️ Daily Returns")
-        st.line_chart(ctx[name_rets])
-        shown_any = True
-
-    if not shown_any:
-        st.info("No visualizable artifacts from the executed plan. Try asking for forecast, risk, optimize, or evaluation.")
-
 def _get_openai_key() -> Optional[str]:
     try:
         if "OPENAI_API_KEY" in st.secrets:
@@ -237,17 +96,54 @@ def _mount_agent_mode():
         agent = StockAgent(model="gpt-4.1-mini", verbose=False)
         out = agent.run(instruction)
 
-        # 展示计划（LLM 输出的思考产物）
-        st.subheader("🧠 Plan (LLM JSON)")
-        st.json(out["plan"], expanded=False)
+        # 从上下文里找到 evaluate_portfolio 的结果，做可视化
+        plan = out["plan"]; ctx = out["results"]
+        eval_names = [c["name"] for c in plan.get("calls", []) if c.get("tool") == "evaluate_portfolio_tool"]
+        pr = None
+        for nm in reversed(eval_names):
+            if nm in ctx:
+                pr = ctx[nm]
+                break
 
-        # 动态自适应展示：按已执行的工具结果决定渲染内容
-        st.subheader("📊 Results")
-        _render_agent_outputs(out["plan"], out["results"])
+        if pr is None:
+            st.warning("No evaluation result found in the plan execution.")
+            return
 
-        #（可选）展示步骤列表
-        st.markdown("### 🗂️ Steps")
-        st.json({"steps": list(out["summary"].keys())}, expanded=False)
+        # 展示核心指标与权重（沿用你现有 app 的风格）
+        name = getattr(pr, "name", "Portfolio")
+        weights: pd.Series = getattr(pr, "weights", None)
+        mu = getattr(pr, "exp_return_annual", None)
+        sigma = getattr(pr, "volatility_annual", None)
+        sharpe = getattr(pr, "sharpe", None)
+        var_alpha = getattr(pr, "var_alpha", None)
+        var_value = getattr(pr, "var_value", None)
+        var_h = getattr(pr, "var_horizon_days", None)
+
+        st.markdown(f"### 📦 {name}")
+        if isinstance(weights, pd.Series):
+            df_w = weights.to_frame("Weight").sort_values("Weight", ascending=False)
+            st.dataframe(df_w.style.format({"Weight": "{:.2%}"}), use_container_width=True)
+
+            # 简单条形图
+            import altair as alt
+            ch_w = (
+                alt.Chart(df_w.reset_index().rename(columns={"index":"Ticker"}))
+                .mark_bar()
+                .encode(
+                    x=alt.X("Ticker:N", sort=None),
+                    y=alt.Y("Weight:Q", axis=alt.Axis(format="%")),
+                    tooltip=["Ticker", alt.Tooltip("Weight:Q", format=".2%")],
+                )
+            )
+            st.altair_chart(ch_w, use_container_width=True)
+
+        cols = st.columns(4)
+        if mu is not None: cols[0].metric("Annualized μ", f"{mu:.2%}")
+        if sigma is not None: cols[1].metric("Annualized σ", f"{sigma:.2%}")
+        if sharpe is not None: cols[2].metric("Sharpe", f"{sharpe:.2f}")
+        if var_value is not None and var_alpha is not None and var_h is not None:
+            conf = int((1 - var_alpha) * 100)
+            cols[3].metric(f"VaR {conf}% / {var_h}d", f"{var_value:.2%}")
 
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
