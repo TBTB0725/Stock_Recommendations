@@ -39,12 +39,12 @@ Rules (decide sign & magnitude)
 7) Be concise: Reason ≤ 20 words, factual and specific.
 
 Output (STRICT JSON, no extra text)
-{
+{{
   "symbol": "{ticker}",
   "name": "",              // official company name if you are highly confident, else ""
   "impact": <float between -1.0 and 1.0>,
   "reason": "<very brief rationale tied to the headline>"
-}
+}}
 """
 
 _client_cache: Dict[str, OpenAI] = {}
