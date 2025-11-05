@@ -709,14 +709,12 @@ if run:
         csv_summary = summary.to_csv(index=True).encode("utf-8")
         csv_weights = weights_tbl.to_csv(index=True).encode("utf-8")
         csv_alloc   = alloc_tbl.to_csv(index=True).encode("utf-8")
-        csv_news    = (df_scored or pd.DataFrame()).to_csv(index=False).encode("utf-8")
 
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f"summary_{stamp}.csv", csv_summary)
             zf.writestr(f"weights_{stamp}.csv", csv_weights)
             zf.writestr(f"allocation_{stamp}.csv", csv_alloc)
-            zf.writestr(f"news_sentiment_{stamp}.csv", csv_news)
         zip_buf.seek(0)
 
         st.download_button(
@@ -725,6 +723,14 @@ if run:
             file_name=f"portfolio_reports_{stamp}.zip",
             mime="application/zip",
             key="dl_zip",
+        )
+
+        st.download_button(
+            "Download News + Sentiment CSV",
+            data=df_scored.to_csv(index=False).encode("utf-8"),
+            file_name="news_sentiment.csv",
+            mime="text/csv",
+            key="dl_news_csv",
         )
 
         # Footer
