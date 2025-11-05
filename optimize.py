@@ -12,75 +12,9 @@ class Constraints:
     # If None, the bound defaults to 1.0 (no per-asset cap; shorting is still disallowed).
     max_weight_per_asset: float | None = None
 
-
-def _as_np(x) -> np.ndarray:
-    """Convert pandas objects or arrays to a float numpy array."""
-    if hasattr(x, "values"):
-        return np.asarray(x.values, dtype=float)
-    return np.asarray(x, dtype=float)
-
-
-def equal_weight(n: int) -> np.ndarray:
-    """Equal-weight vector of length n."""
-    if n <= 0:
-        raise ValueError("n must be positive.")
-    return np.ones(n, dtype=float) / n
-
-
-def _bounds(n: int, cons: Constraints | None) -> list[tuple[float, float]]:
-    """
-    Box bounds for SLSQP: 0 <= w_i <= hi (no shorting).
-    If max_weight_per_asset is None, hi = 1.0.
-    """
-    hi = 1.0 if cons is None or cons.max_weight_per_asset is None else float(cons.max_weight_per_asset)
-    hi = min(hi, 1.0)
-    if hi <= 0:
-        raise ValueError("max_weight_per_asset must be > 0.")
-    return [(0.0, hi) for _ in range(n)]
-
-
-def _sum_to_one_constraint():
-    """Linear equality constraint: sum(w) = 1."""
-    return {"type": "eq", "fun": lambda w: np.sum(w) - 1.0}
-
-
-def _cleanup_weights(w: np.ndarray, tol: float = 1e-10) -> np.ndarray:
-    """
-    Numerical cleanup after optimization: zero-out tiny values and renormalize to sum to 1.
-    (SLSQP already enforces sum(w)=1, but this guards against tiny drift.)
-    """
-    w = np.asarray(w, dtype=float)
-    w[np.abs(w) < tol] = 0.0
-    s = w.sum()
-    return (w / s) if s > 0 else w
-
-
-def _random_feasible_start(n: int, cap: float, rng: np.random.Generator) -> np.ndarray:
-    """
-    Generate a random feasible starting point under:
-      sum(w)=1, 0<=w_i<=cap.
-    Simple approach: Dirichlet -> clip by cap -> renormalize.
-    """
-    w = rng.dirichlet(np.ones(n))
-    if cap < 1.0:
-        w = np.minimum(w, cap)
-        s = w.sum()
-        w = (w / s) if s > 0 else equal_weight(n)
-    return w
-
-def _ensure_cap_feasible(n: int, cons: Constraints | None):
-    if cons is None or cons.max_weight_per_asset is None:
-        return
-    cap = float(cons.max_weight_per_asset)
-    if cap <= 0:
-        raise ValueError("max_weight_per_asset must be > 0.")
-    if cap * n < 1.0:
-        raise ValueError(
-            f"Infeasible: n={n}, max_weight_per_asset={cap} → n*cap={cap*n:.3f} < 1. "
-            f"Increase cap or add more assets."
-        )
-
-
+# -----------------------------
+# Three Strategy Percentages
+# -----------------------------
 def solve_min_variance(Sigma, cons: Constraints | None = None) -> np.ndarray:
     """
     Minimum variance portfolio:
@@ -171,3 +105,73 @@ def solve_max_sharpe(
             best_w = res.x
 
     return _cleanup_weights(best_w)
+
+# -----------------------------
+# Help Functions
+# -----------------------------
+def _as_np(x) -> np.ndarray:
+    """Convert pandas objects or arrays to a float numpy array."""
+    if hasattr(x, "values"):
+        return np.asarray(x.values, dtype=float)
+    return np.asarray(x, dtype=float)
+
+
+def equal_weight(n: int) -> np.ndarray:
+    """Equal-weight vector of length n."""
+    if n <= 0:
+        raise ValueError("n must be positive.")
+    return np.ones(n, dtype=float) / n
+
+
+def _bounds(n: int, cons: Constraints | None) -> list[tuple[float, float]]:
+    """
+    Box bounds for SLSQP: 0 <= w_i <= hi (no shorting).
+    If max_weight_per_asset is None, hi = 1.0.
+    """
+    hi = 1.0 if cons is None or cons.max_weight_per_asset is None else float(cons.max_weight_per_asset)
+    hi = min(hi, 1.0)
+    if hi <= 0:
+        raise ValueError("max_weight_per_asset must be > 0.")
+    return [(0.0, hi) for _ in range(n)]
+
+
+def _sum_to_one_constraint():
+    """Linear equality constraint: sum(w) = 1."""
+    return {"type": "eq", "fun": lambda w: np.sum(w) - 1.0}
+
+
+def _cleanup_weights(w: np.ndarray, tol: float = 1e-10) -> np.ndarray:
+    """
+    Numerical cleanup after optimization: zero-out tiny values and renormalize to sum to 1.
+    (SLSQP already enforces sum(w)=1, but this guards against tiny drift.)
+    """
+    w = np.asarray(w, dtype=float)
+    w[np.abs(w) < tol] = 0.0
+    s = w.sum()
+    return (w / s) if s > 0 else w
+
+
+def _random_feasible_start(n: int, cap: float, rng: np.random.Generator) -> np.ndarray:
+    """
+    Generate a random feasible starting point under:
+      sum(w)=1, 0<=w_i<=cap.
+    Simple approach: Dirichlet -> clip by cap -> renormalize.
+    """
+    w = rng.dirichlet(np.ones(n))
+    if cap < 1.0:
+        w = np.minimum(w, cap)
+        s = w.sum()
+        w = (w / s) if s > 0 else equal_weight(n)
+    return w
+
+def _ensure_cap_feasible(n: int, cons: Constraints | None):
+    if cons is None or cons.max_weight_per_asset is None:
+        return
+    cap = float(cons.max_weight_per_asset)
+    if cap <= 0:
+        raise ValueError("max_weight_per_asset must be > 0.")
+    if cap * n < 1.0:
+        raise ValueError(
+            f"Infeasible: n={n}, max_weight_per_asset={cap} → n*cap={cap*n:.3f} < 1. "
+            f"Increase cap or add more assets."
+        )

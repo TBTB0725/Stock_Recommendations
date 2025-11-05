@@ -14,6 +14,87 @@ import math
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 TRADING_DAYS_PER_YEAR = 252
 
+# -----------------------------
+# Forecast return based on prices and hyperparameters
+# -----------------------------
+def prophet_expected_returns(
+    prices: pd.DataFrame,
+    horizon: str = "3M",
+    tune: bool = False,
+    cv_metric: str = "rmse",
+    cv_initial_days: Optional[int] = None,
+    cv_period_days: Optional[int] = None,
+    param_grid: Optional[Dict[str, List]] = None,
+    min_points_for_cv: int = 100,
+) -> pd.Series:
+    """
+    Use Prophet to forecast each stock's daily log returns and return the annualized expected return μ.
+    prices: rows = dates (business days), columns = tickers (recommended to use data.get_prices)
+    horizon: forecast horizon ('1M','3M','6M','1Y', etc.)
+    tune: whether to enable time-series cross-validation + hyper-parameter tuning
+    cv_metric: metric used to pick best params ('rmse','mse','mae','mape','mdape','coverage')
+    cv_initial_days: initial window size for CV (trading days). If None, auto:
+                     max(252, 3*horizon)
+    cv_period_days:  step between CV cutoffs (trading days). If None, auto: max(21, horizon//2)
+    param_grid: dict of Prophet constructor hyper-params lists to grid search
+    min_points_for_cv: if series has fewer points than this, skip tuning
+    """
+    days = _H[horizon.upper()]
+    out = {}
+
+    for t in prices.columns:
+        p = prices[t].dropna()
+        
+        if (p <= 0).any():
+            raise ValueError(f"Non-positive prices for {t}; log-transform requires positive prices.")
+        logp = np.log(p.dropna())
+        df = pd.DataFrame({"ds": logp.index, "y": logp.values})
+
+        do_tune = tune and (len(df) >= min_points_for_cv)
+        if do_tune:
+            if cv_initial_days is None:
+                cv_initial_days_eff = max(252, 3 * days)
+            else:
+                cv_initial_days_eff = int(cv_initial_days)
+            if cv_period_days is None:
+                cv_period_days_eff = max(21, days // 2)
+            else:
+                cv_period_days_eff = int(cv_period_days)
+
+            best_params, _ = _choose_best_params_with_cv(
+                df=df,
+                horizon_days_trading=days,
+                param_grid=param_grid,
+                initial_days_trading=cv_initial_days_eff,
+                period_days_trading=cv_period_days_eff,
+                metric=cv_metric,
+            )
+            m = _fit_prophet_on_returns(df, best_params)
+        else:
+            m = Prophet(
+                daily_seasonality=False,
+                weekly_seasonality=False,
+                yearly_seasonality=False,
+                n_changepoints=0,
+                changepoint_prior_scale=0.001,
+                seasonality_mode="additive",
+            )
+            m.fit(df)
+
+        future = m.make_future_dataframe(periods=days, freq="B", include_history=True)
+        fcst_full = m.predict(future)
+
+        idx_hist_last = len(df) - 1
+        yhat_start = float(fcst_full["yhat"].iloc[idx_hist_last])
+        yhat_end   = float(fcst_full["yhat"].iloc[-1])
+
+        logret_horizon = yhat_end - yhat_start
+        r_horizon = np.expm1(logret_horizon)
+
+        mu_annual = (1.0 + r_horizon) ** (TRADING_DAYS_PER_YEAR / days) - 1.0
+        out[t] = float(mu_annual)
+
+    return pd.Series(out, index=prices.columns, name="mu_annual")
 
 # -----------------------------
 # Help Functions
@@ -155,85 +236,3 @@ def _choose_best_params_with_cv(
         best_score = float("inf")
 
     return best_params, best_score
-
-# -----------------------------
-# Forecast return based on prices and hyperparameters
-# -----------------------------
-def prophet_expected_returns(
-    prices: pd.DataFrame,
-    horizon: str = "3M",
-    tune: bool = False,
-    cv_metric: str = "rmse",
-    cv_initial_days: Optional[int] = None,
-    cv_period_days: Optional[int] = None,
-    param_grid: Optional[Dict[str, List]] = None,
-    min_points_for_cv: int = 100,
-) -> pd.Series:
-    """
-    Use Prophet to forecast each stock's daily log returns and return the annualized expected return μ.
-    prices: rows = dates (business days), columns = tickers (recommended to use data.get_prices)
-    horizon: forecast horizon ('1M','3M','6M','1Y', etc.)
-    tune: whether to enable time-series cross-validation + hyper-parameter tuning
-    cv_metric: metric used to pick best params ('rmse','mse','mae','mape','mdape','coverage')
-    cv_initial_days: initial window size for CV (trading days). If None, auto:
-                     max(252, 3*horizon)
-    cv_period_days:  step between CV cutoffs (trading days). If None, auto: max(21, horizon//2)
-    param_grid: dict of Prophet constructor hyper-params lists to grid search
-    min_points_for_cv: if series has fewer points than this, skip tuning
-    """
-    days = _H[horizon.upper()]
-    out = {}
-
-    for t in prices.columns:
-        p = prices[t].dropna()
-        
-        if (p <= 0).any():
-            raise ValueError(f"Non-positive prices for {t}; log-transform requires positive prices.")
-        logp = np.log(p.dropna())
-        df = pd.DataFrame({"ds": logp.index, "y": logp.values})
-
-        do_tune = tune and (len(df) >= min_points_for_cv)
-        if do_tune:
-            if cv_initial_days is None:
-                cv_initial_days_eff = max(252, 3 * days)
-            else:
-                cv_initial_days_eff = int(cv_initial_days)
-            if cv_period_days is None:
-                cv_period_days_eff = max(21, days // 2)
-            else:
-                cv_period_days_eff = int(cv_period_days)
-
-            best_params, _ = _choose_best_params_with_cv(
-                df=df,
-                horizon_days_trading=days,
-                param_grid=param_grid,
-                initial_days_trading=cv_initial_days_eff,
-                period_days_trading=cv_period_days_eff,
-                metric=cv_metric,
-            )
-            m = _fit_prophet_on_returns(df, best_params)
-        else:
-            m = Prophet(
-                daily_seasonality=False,
-                weekly_seasonality=False,
-                yearly_seasonality=False,
-                n_changepoints=0,
-                changepoint_prior_scale=0.001,
-                seasonality_mode="additive",
-            )
-            m.fit(df)
-
-        future = m.make_future_dataframe(periods=days, freq="B", include_history=True)
-        fcst_full = m.predict(future)
-
-        idx_hist_last = len(df) - 1
-        yhat_start = float(fcst_full["yhat"].iloc[idx_hist_last])
-        yhat_end   = float(fcst_full["yhat"].iloc[-1])
-
-        logret_horizon = yhat_end - yhat_start
-        r_horizon = np.expm1(logret_horizon)
-
-        mu_annual = (1.0 + r_horizon) ** (TRADING_DAYS_PER_YEAR / days) - 1.0
-        out[t] = float(mu_annual)
-
-    return pd.Series(out, index=prices.columns, name="mu_annual")
