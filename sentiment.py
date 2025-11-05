@@ -49,7 +49,57 @@ Output (STRICT JSON, no extra text)
 
 _client_cache: Dict[str, OpenAI] = {}
 
+# -----------------------------
+# Gives title a score
+# -----------------------------
+def score_titles(
+    items: List[Dict[str, Any]],
+    model_name: str = DEFAULT_MODEL,
+    api_key: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Call the LLM once per (ticker, headline) to score near-term price impact and
+    return the input list enriched with model outputs.
+
+    Parameters
+    ----------
+    items : list[dict]
+        Each item must include at least:
+          - "ticker": str
+          - "headline": str
+        Any extra keys are preserved and passed through.
+    model_name : str, default DEFAULT_MODEL
+        LLM/model identifier used by `_score_one` (e.g., "gemini-2.5-flash").
+    api_key : str | None, default None
+        API key for the client; if None, `_ensure_client` resolves it from env/config.
+
+    Returns
+    -------
+    list[dict]
+        Same length/order as `items`, where each dict is updated with:
+          - "impact": float        # model-scored impact in [-1.0, 1.0]
+          - "ai_raw": str          # raw text returned by the model (for debugging/auditing)
+          - "ai_json": dict        # parsed JSON payload with fields like {"impact", "reason", ...}
+
+    Notes
+    -----
+    - This function is a thin map over `_score_one(...)` with passthrough of original keys.
+    - Use try/except at the call site if you need per-item fault tolerance; exceptions bubble up.
+    """
+    client = _ensure_client(api_key)
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        res = _score_one(client, model_name, str(it.get("ticker", "")).strip(), str(it.get("headline", "")).strip())
+        row = dict(it); row.update(res)
+        out.append(row)
+    return out
+
+
+# -----------------------------
+# Help Functions
+# -----------------------------
 def _ensure_client(api_key: Optional[str] = None) -> OpenAI:
+    """Ensure a reusable OpenAI client is initialized with a valid API key and return it."""
     key = api_key or os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI")
     if not key:
         raise RuntimeError("Missing OPENAI_API_KEY (or pass api_key).")
@@ -58,6 +108,7 @@ def _ensure_client(api_key: Optional[str] = None) -> OpenAI:
     return _client_cache["client"]
 
 def _first_json(text: str) -> Dict[str, Any]:
+    """Extract and parse the first valid JSON object found within a text string."""
     s = (text or "").strip()
     if s.startswith("```"):
         s = s.strip("`")
@@ -74,6 +125,7 @@ def _first_json(text: str) -> Dict[str, Any]:
             return {}
 
 def _score_one(client: OpenAI, model_name: str, ticker: str, headline: str) -> Dict[str, Any]:
+    """Use an OpenAI model to evaluate one news headline and return its sentiment impact score."""
     if not headline or not str(headline).strip():
         return {"impact": 0.0, "ai_raw": "", "ai_json": {}}
 
@@ -118,29 +170,3 @@ def _score_one(client: OpenAI, model_name: str, ticker: str, headline: str) -> D
             time.sleep(delay); delay *= _BACKOFF
 
     return {"impact": 0.0, "ai_raw": f"ERROR: {last_err}", "ai_json": {}}
-
-def score_titles(
-    items: List[Dict[str, Any]],
-    model_name: str = DEFAULT_MODEL,
-    api_key: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """
-    Input: list[dict], each item contains at least {"ticker": str, "headline": str}
-    Output: list[dict] aligned with the input, with additional {"impact": float, "ai_raw": str, "ai_json": dict}
-    """
-    client = _ensure_client(api_key)
-    out: List[Dict[str, Any]] = []
-    for it in items:
-        res = _score_one(client, model_name, str(it.get("ticker", "")).strip(), str(it.get("headline", "")).strip())
-        row = dict(it); row.update(res)
-        out.append(row)
-    return out
-
-if __name__ == "__main__":
-    demo = [
-        {"ticker":"AAPL","headline":"Apple unveils new iPhone with satellite SOS feature"},
-        {"ticker":"NVDA","headline":"NVIDIA data-center revenue jumps on strong AI demand"},
-        {"ticker":"TSLA","headline":"Tesla recalls vehicles to fix Autopilot warning issue"},
-    ]
-    out = score_titles(demo, model_name=os.getenv("OPENAI_MODEL","gpt-4.1-mini"))
-    print(json.dumps(out, ensure_ascii=False, indent=2))
