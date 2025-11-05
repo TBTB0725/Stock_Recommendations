@@ -54,7 +54,7 @@ def var_historical(port_ret_series: pd.Series, alpha: float = 0.05, horizon_days
 
     if log_returns:
         roll_sum = r.rolling(horizon_days).sum().dropna()
-        agg = np.expm1(roll_sum)  # convert to simple return
+        agg = np.expm1(roll_sum)
     else:
         agg = (1.0 + r).rolling(horizon_days).apply(np.prod, raw=True).dropna() - 1.0
 

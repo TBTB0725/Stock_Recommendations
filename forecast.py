@@ -12,7 +12,7 @@ import math
 # Public Constant
 # -----------------------------
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
-tdpy = 252
+TRADING_DAYS_PER_YEAR = 252
 
 
 # -----------------------------
@@ -233,7 +233,7 @@ def prophet_expected_returns(
         logret_horizon = yhat_end - yhat_start
         r_horizon = np.expm1(logret_horizon)
 
-        mu_annual = (1.0 + r_horizon) ** (tdpy / days) - 1.0
+        mu_annual = (1.0 + r_horizon) ** (TRADING_DAYS_PER_YEAR / days) - 1.0
         out[t] = float(mu_annual)
 
     return pd.Series(out, index=prices.columns, name="mu_annual")
