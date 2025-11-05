@@ -12,7 +12,7 @@ import streamlit as st
 import altair as alt
 import json
 
-# Project modules: ensure app.py is in the same directory as these files
+# Project modules
 from data import get_prices, to_returns
 from forecast import prophet_expected_returns
 from risk import cov_matrix, TRADING_DAYS_PER_YEAR as tdpy
@@ -30,6 +30,9 @@ from agent.agent import StockAgent
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
 
+# --------------------------
+# Help Functions
+# --------------------------
 def _get_openai_key() -> Optional[str]:
     try:
         if "OPENAI_API_KEY" in st.secrets:
@@ -39,7 +42,7 @@ def _get_openai_key() -> Optional[str]:
     return os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI")
 
 # --------------------------
-# Streamlit Page Config
+# Streamlit Page Title
 # --------------------------
 st.set_page_config(
     page_title="Stock_Recommendations",
@@ -50,7 +53,7 @@ st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Ri
 st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
 
 
-# =============== Agent 模式渲染（不会破坏原有页面） ===============
+# =============== Agent Mode ===============
 def _mount_agent_mode():
     st.header("🤖 Agent Mode")
 
@@ -191,7 +194,7 @@ horizon = st.sidebar.selectbox(
     help="Default: 1W"
 )
 
-# === Advanced toggle (everything else lives behind toggles) ===
+# === Advanced toggle ===
 st.sidebar.divider()
 show_adv = st.sidebar.checkbox("Show advanced", value=False)
 
@@ -211,48 +214,46 @@ prophet_tune = False
 prophet_metric = "rmse"
 cv_initial = 252
 cv_period = 126
-param_grid_json: Optional[str] = None  # keep None unless user enables & provides JSON
+param_grid_json: Optional[str] = None
 
 if show_adv:
     st.sidebar.subheader("Advanced: optional controls")
 
     # --- News & Sentiment ---
-    use_news = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=True)
-    if use_news:
+    if st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False):
         news_lookback = st.sidebar.number_input(
             "News lookback (days)", min_value=1, max_value=60, value=12, step=1
         )
         news_per_ticker = st.sidebar.slider(
-            "Max headlines per ticker (raw scrape)", min_value=10, max_value=200, value=100, step=10
+            "Max headlines per ticker (raw scrape)", min_value=10, max_value=200, value=25, step=10
         )
         news_final_cap = st.sidebar.slider(
-            "Final cap per ticker (after sorting)", min_value=5, max_value=100, value=25, step=5
+            "Final cap per ticker (after sorting)", min_value=5, max_value=100, value=5, step=5
         )
         news_model = st.sidebar.text_input(
             "Sentiment model (OpenAI)",
             value=SENTI_DEFAULT_MODEL,
             help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
         )
-
         openai_key = _get_openai_key()
-        if use_news and not openai_key:
+        if st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False) and not openai_key:
             st.sidebar.warning("No OPENAI_API_KEY")
 
-    # --- Lookback days（独立开关，折叠标签） ---
+    # --- Lookback days ---
     if st.sidebar.checkbox("Lookback days", value=False):
         lookback_days = st.sidebar.number_input(
             "Lookback Days (trading days)",
             min_value=60, max_value=1260, step=21, value=lookback_days,
             help="Default: 504 (~1Y)",
-            label_visibility="collapsed",   # ← 不显示标题，避免重复
+            label_visibility="collapsed",
         )
 
-    # --- Risk-free rate（独立开关，折叠标签） ---
+    # --- Risk-free rate ---
     if st.sidebar.checkbox("Risk-free rate", value=False):
         rf_str = st.sidebar.text_input(
             "Risk-free rate (annual)",
             value=f"{rf:.3f}",
-            label_visibility="collapsed"    # ← 不显示标题
+            label_visibility="collapsed"
         )
         try:
             rf = float(rf_str)
@@ -351,18 +352,11 @@ def _mu_prophet_cached(prices: pd.DataFrame,
                        cv_init: Optional[int],
                        cv_per: Optional[int],
                        param_grid_json: Optional[str]) -> pd.Series:
-    """
-    Backward compatible call into forecast.py.
-    - If param_grid_json is provided, parse it and pass as `param_grid`.
-    - If the forecast function doesn't accept new kwargs, fall back to legacy signature.
-    """
-    # Parse JSON (if any)
     param_grid = None
     if param_grid_json:
         try:
             param_grid = json.loads(param_grid_json)
         except Exception:
-            # Already warned in sidebar; just ignore here
             param_grid = None
 
     try:
@@ -376,29 +370,22 @@ def _mu_prophet_cached(prices: pd.DataFrame,
         }
         return prophet_expected_returns(prices, **kwargs)
     except TypeError:
-        # Legacy fallback
         return prophet_expected_returns(prices, horizon=horizon)
 
 @st.cache_data(show_spinner=False, ttl=600)
 def _fetch_news_cached_ui(tickers: List[str], lookback_days: int, per_ticker_count: int, final_cap: int) -> pd.DataFrame:
-    """
-    Wraps fetch_finviz_headlines to do UI caching and return unified columns.
-    """
     df = fetch_finviz_headlines(
         tickers=tickers,
         lookback_days=lookback_days,
         per_ticker_count=per_ticker_count,
         final_cap=final_cap,
-        sleep_s=0.2,  # 降速一些，避免过快
+        sleep_s=0.2,
     )
     cols = ["ticker", "datetime", "headline", "source", "url", "relatedTickers"]
     return df[cols] if len(df) else df
 
-
+@st.cache_data(show_spinner=False, ttl=300)
 def _score_news_llm(df_news: pd.DataFrame, model_name: str, api_key: Optional[str]) -> pd.DataFrame:
-    """
-    Call sentiment.score_titles to score each article and merge it back into df.
-    """
     if df_news is None or df_news.empty:
         return df_news
 
@@ -517,7 +504,7 @@ if run:
 
         # === Convert summary from annualized → horizon (keep VaR as-is) ===
         days = _H[horizon.upper()]
-        scale = days / float(tdpy)             # time fraction in years
+        scale = days / float(tdpy) 
         sqrt_scale = math.sqrt(scale)
         h_label = _H_HUMAN.get(horizon.upper(), horizon)
 
@@ -631,7 +618,7 @@ if run:
             st.altair_chart(chart_vol, use_container_width=True)
         
         # News & Sentiment
-        if use_news:
+        if st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False):
             if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
                 st.warning("No OPENAI_API_KEY")
 
@@ -647,18 +634,15 @@ if run:
             if df_news is None or df_news.empty:
                 st.info("No headlines fetched.")
             else:
-                # 打分（如果没有 API Key，函数内部也会容错并返回 0 分）
                 with st.spinner("[News] Scoring headlines..."):
                     df_scored = _score_news_llm(df_news, model_name=news_model, api_key=openai_key)
 
-                # 统一 impact 类型
-                df_scored = pd.DataFrame(df_scored)  # 如果不确定它是不是 DataFrame，先包回去
+                df_scored = pd.DataFrame(df_scored)
                 df_scored.loc[:, "impact"] = (
                     pd.to_numeric(df_scored["impact"], errors="coerce")
                     .fillna(0.0)
                 )
 
-                # 1) 平均 impact by Ticker
                 try:
                     avg_impact = (
                         df_scored.groupby("ticker", as_index=False)["impact"]
@@ -678,7 +662,6 @@ if run:
                 except Exception:
                     pass
 
-                # 2) Top 正/负标题（各 5 条）
                 cpos, cneg = st.columns(2)
                 with cpos:
                     st.markdown("**Top Positive Headlines**")
@@ -701,7 +684,6 @@ if run:
                                if isinstance(r.get('reason'), str) and r['reason'] else "")
                         )
 
-                # 3) 完整表格（可筛选/下载）
                 with st.expander("🔎 Full Headlines Table", expanded=False):
                     _tbl = df_scored.copy()
                     if "datetime" in _tbl.columns and _tbl["datetime"].notna().any():
@@ -726,12 +708,14 @@ if run:
         csv_summary = summary.to_csv(index=True).encode("utf-8")
         csv_weights = weights_tbl.to_csv(index=True).encode("utf-8")
         csv_alloc   = alloc_tbl.to_csv(index=True).encode("utf-8")
+        csv_news    = (df_scored or pd.DataFrame()).to_csv(index=False).encode("utf-8")
 
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f"summary_{stamp}.csv", csv_summary)
             zf.writestr(f"weights_{stamp}.csv", csv_weights)
             zf.writestr(f"allocation_{stamp}.csv", csv_alloc)
+            zf.writestr(f"news_sentiment_{stamp}.csv", csv_news)
         zip_buf.seek(0)
 
         st.download_button(
@@ -740,14 +724,6 @@ if run:
             file_name=f"portfolio_reports_{stamp}.zip",
             mime="application/zip",
             key="dl_zip",
-        )
-
-        st.download_button(
-            "Download News + Sentiment CSV",
-            data=df_scored.to_csv(index=False).encode("utf-8"),
-            file_name="news_sentiment.csv",
-            mime="text/csv",
-            key="dl_news_csv",
         )
 
         # Footer
