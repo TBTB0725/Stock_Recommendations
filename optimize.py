@@ -17,10 +17,21 @@ class Constraints:
 # -----------------------------
 def solve_min_variance(Sigma, cons: Constraints | None = None) -> np.ndarray:
     """
-    Minimum variance portfolio:
+    Solve the minimum-variance portfolio:
         minimize   w^T Σ w
-        subject to sum(w) = 1,  0 <= w_i <= max_weight_per_asset
-    - Sigma: covariance matrix (preferably annualized), np.ndarray or pd.DataFrame.
+        subject to sum(w) = 1 and 0 ≤ w_i ≤ cap (from `cons.max_weight_per_asset`).
+
+    Parameters
+    ----------
+    Sigma : (n*n) array-like
+        Covariance matrix (preferably annualized).
+    cons : Constraints | None
+        Optional per-asset cap; None → no cap (treated as 1.0).
+
+    Returns
+    -------
+    np.ndarray
+        Weight vector w (length n), cleaned/normalized to satisfy constraints.
     """
     _ensure_cap_feasible(_as_np(Sigma).shape[0], cons)
     S = _as_np(Sigma)
@@ -35,10 +46,21 @@ def solve_min_variance(Sigma, cons: Constraints | None = None) -> np.ndarray:
 
 def solve_max_return(mu, cons: Constraints | None = None) -> np.ndarray:
     """
-    Maximum expected return portfolio:
-        maximize   μ^T w    (equivalently minimize -μ^T w)
-        subject to sum(w) = 1,  0 <= w_i <= max_weight_per_asset
-    - mu: expected returns vector (use the same scale as used elsewhere, e.g., annualized).
+    Solve the maximum expected return portfolio:
+        maximize   μ^T w   (implemented as minimize −μ^T w)
+        subject to sum(w) = 1 and 0 ≤ w_i ≤ cap.
+
+    Parameters
+    ----------
+    mu : (n,) array-like
+        Expected returns vector (same scale as used elsewhere, e.g., annualized).
+    cons : Constraints | None
+        Optional per-asset cap; None → no cap (treated as 1.0).
+
+    Returns
+    -------
+    np.ndarray
+        Weight vector w (length n), cleaned/normalized to satisfy constraints.
     """
     _ensure_cap_feasible(_as_np(mu).reshape(-1).shape[0], cons)
     m = _as_np(mu).reshape(-1)
@@ -61,16 +83,31 @@ def solve_max_sharpe(
     seed: int = 0,
 ) -> np.ndarray:
     """
-    Maximum Sharpe ratio portfolio:
+    Solve the maximum Sharpe ratio portfolio via SLSQP (with optional multi-start):
         maximize   ((μ - r_f)^T w) / sqrt(w^T Σ w)
-        subject to sum(w) = 1,  0 <= w_i <= max_weight_per_asset
-    Implemented by minimizing the negative Sharpe. A small eps is added to avoid division by zero.
-    Supports multi-start (restarts > 0) to improve stability on non-convex landscapes.
-    - mu: expected returns vector (same scale as Sigma, e.g., annualized if Sigma is annualized).
-    - Sigma: covariance matrix (preferably annualized).
-    - rf: risk-free rate (same scale as mu).
-    - restarts: number of additional random restarts (0 disables multi-start).
-    - seed: random seed for reproducibility of starting points.
+        subject to sum(w) = 1 and 0 ≤ w_i ≤ cap.
+
+    Parameters
+    ----------
+    mu : (n,) array-like
+        Expected returns vector (same scale as Sigma; e.g., annualized).
+    Sigma : (n*n) array-like
+        Covariance matrix (preferably annualized).
+    rf : float, default 0.0
+        Risk-free rate (same scale as mu).
+    cons : Constraints | None
+        Optional per-asset cap; None → no cap (treated as 1.0).
+    eps : float, default 1e-12
+        Small positive term to avoid division-by-zero in volatility.
+    restarts : int, default 0
+        Number of additional random feasible starting points (0 disables multi-start).
+    seed : int, default 0
+        RNG seed for reproducible starts.
+
+    Returns
+    -------
+    np.ndarray
+        Weight vector w (length n) that (approximately) maximizes the Sharpe ratio.
     """
     _ensure_cap_feasible(_as_np(mu).reshape(-1).shape[0], cons)
     m = _as_np(mu).reshape(-1)

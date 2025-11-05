@@ -28,16 +28,46 @@ def prophet_expected_returns(
     min_points_for_cv: int = 100,
 ) -> pd.Series:
     """
-    Use Prophet to forecast each stock's daily log returns and return the annualized expected return μ.
-    prices: rows = dates (business days), columns = tickers (recommended to use data.get_prices)
-    horizon: forecast horizon ('1M','3M','6M','1Y', etc.)
-    tune: whether to enable time-series cross-validation + hyper-parameter tuning
-    cv_metric: metric used to pick best params ('rmse','mse','mae','mape','mdape','coverage')
-    cv_initial_days: initial window size for CV (trading days). If None, auto:
-                     max(252, 3*horizon)
-    cv_period_days:  step between CV cutoffs (trading days). If None, auto: max(21, horizon//2)
-    param_grid: dict of Prophet constructor hyper-params lists to grid search
-    min_points_for_cv: if series has fewer points than this, skip tuning
+    Forecast per-ticker daily log prices with Prophet, convert the horizon move to a simple return,
+    and annualize it to produce expected returns μ (one value per ticker).
+
+    Workflow
+    --------
+    For each column (ticker) in `prices`:
+      1) Take log(price) as `y` and fit a Prophet model (optionally tune via time-series CV).
+      2) Predict `horizon` business days ahead, compute ΔlogP over the horizon → horizon simple return.
+      3) Geometrically scale the horizon return to an annualized expected return μ.
+
+    Parameters
+    ----------
+    prices : pd.DataFrame
+        Business-day price table (index=dates, columns=tickers); all prices must be > 0.
+    horizon : str, default "3M"
+        Forecast horizon (e.g., "1M", "3M", "6M", "1Y"); maps to a number of trading days internally.
+    tune : bool, default False
+        Whether to run Prophet hyper-parameter tuning via time-series cross-validation.
+    cv_metric : {"rmse","mse","mae","mape","mdape","coverage"}, default "rmse"
+        Metric for model selection when `tune=True`.
+    cv_initial_days : int | None, default None
+        Initial training window length in trading days for CV; default uses max(252, 3*horizon_days).
+    cv_period_days : int | None, default None
+        Step between CV cutoffs in trading days; default uses max(21, horizon_days//2).
+    param_grid : dict[str, list] | None, default None
+        Prophet constructor grid for tuning; if None and `tune=True`, uses your helper’s defaults.
+    min_points_for_cv : int, default 100
+        Minimum series length required to attempt tuning; below this, tuning is skipped.
+
+    Returns
+    -------
+    pd.Series
+        Annualized expected return μ per ticker (index = `prices.columns`, name="mu_annual").
+
+    Notes
+    -----
+    - The base model (when `tune=False`) disables seasonality and changepoints for a conservative trend fit.
+    - Annualization uses geometric scaling: μ = (1 + r_horizon) ** (252 / horizon_days) - 1.
+    - Assumes trading-day frequency (“B”) for future frames and scaling; adjust if your calendar differs.
+    - Raises ValueError if any series contains non-positive prices (log transform requirement).
     """
     days = _H[horizon.upper()]
     out = {}

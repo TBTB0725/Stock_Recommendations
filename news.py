@@ -27,6 +27,9 @@ _BS_PARSER = "lxml"
 # Convert Time Zone to UTC
 _ET = ZoneInfo("America/New_York")
 
+# -----------------------------
+# Fetch news headlines
+# -----------------------------
 def fetch_finviz_headlines(
     tickers: Iterable[str],
     lookback_days: int = DEFAULT_LOOKBACK_DAYS,
@@ -34,6 +37,47 @@ def fetch_finviz_headlines(
     final_cap: int = DEFAULT_FINAL_CAP,
     sleep_s: float = DEFAULT_SLEEP_S,
 ) -> pd.DataFrame:
+    """
+    Scrape and normalize recent news headlines from FINVIZ for a list of tickers.
+
+    Workflow:
+      1) For each ticker, fetch its FINVIZ news table, parse up to `per_ticker_count` rows.
+      2) Normalize rows into a common schema and keep only items within the last `lookback_days`
+         (items with unparseable datetime are kept).
+      3) Optionally sleep `sleep_s` seconds between tickers to be polite.
+      4) Drop empty-headline rows, sort by (ticker, datetime desc), and keep top `final_cap` per ticker.
+
+    Parameters
+    ----------
+    tickers : Iterable[str]
+        List of symbols; will be cleaned and uppercased.
+    lookback_days : int
+        Maximum age (in days) of headlines to retain (UTC cutoff).
+    per_ticker_count : int
+        Max number of raw rows to parse per ticker from FINVIZ.
+    final_cap : int
+        Max number of normalized headlines to keep per ticker after ranking.
+    sleep_s : float
+        Throttle between requests (seconds); 0 disables sleeping.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns include:
+          - ticker (str)
+          - datetime (datetime | None, timezone-aware UTC when parse succeeds)
+          - headline (str)
+          - source (str)
+          - url (str)
+          - relatedTickers (List[str])
+        One row per retained headline; index is reset.
+
+    Notes
+    -----
+    - Datetimes are parsed in US/Eastern when available and converted to UTC.
+    - Rows with missing/invalid datetime pass the cutoff test and are retained.
+    - Be mindful of FINVIZ terms of use; consider increasing `sleep_s` if scraping many tickers.
+    """
     
     tickers = [t.strip().upper() for t in tickers if t and str(t).strip()]
 
@@ -65,8 +109,15 @@ def fetch_finviz_headlines(
 
     return df.reset_index(drop=True)
 
-# Single ticker scrapping
+# -----------------------------
+# Help Functions
+# -----------------------------
 def _scrape_finviz_single(ticker: str, per_ticker_count: int) -> List[Dict[str, Any]]:
+    """
+    Fetch the FINVIZ news page for a ticker and parse up to 
+    N rows into dicts with date/time/headline/url/source.
+    """
+
     url = _FINVIZ_BASE + ticker
     
     req = Request(
@@ -122,8 +173,11 @@ def _scrape_finviz_single(ticker: str, per_ticker_count: int) -> List[Dict[str, 
 
     return parsed
 
-# Standardize
 def _normalize_row(ticker: str, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Normalize one parsed FINVIZ row into the app's schema 
+    (uppercased ticker, UTC datetime, headline, source, url).
+    """
     headline = (item.get("headline") or "").strip()
     url = (item.get("url") or "").strip()
     source = (item.get("source") or "").strip()
@@ -138,9 +192,11 @@ def _normalize_row(ticker: str, item: Dict[str, Any]) -> Optional[Dict[str, Any]
         "relatedTickers": [ticker.upper()],
     }
 
-
-
 def _parse_to_utc(date_str: str, time_str: str) -> Optional[datetime]:
+    """
+    Parse FINVIZ-style date/time (Today/Yesterday/MMM-DD-YY/YYY) 
+    in US/Eastern and return a timezone-aware UTC datetime.
+    """
     if not time_str:
         return None
     now_et = datetime.now(_ET) if _ET else datetime.now()
@@ -150,7 +206,7 @@ def _parse_to_utc(date_str: str, time_str: str) -> Optional[datetime]:
         d = (now_et - timedelta(days=1)).date()
     else:
         d = None
-        for fmt in ("%b-%d-%y", "%b-%d-%Y"):  # e.g., Oct-18-25 / Oct-18-2025
+        for fmt in ("%b-%d-%y", "%b-%d-%Y"):
             try:
                 d = datetime.strptime(date_str, fmt).date()
                 break
@@ -165,13 +221,3 @@ def _parse_to_utc(date_str: str, time_str: str) -> Optional[datetime]:
     if _ET:
         return datetime(d.year, d.month, d.day, t.hour, t.minute, tzinfo=_ET).astimezone(timezone.utc)
     return datetime(d.year, d.month, d.day, t.hour, t.minute).replace(tzinfo=timezone.utc)
-
-_PUNC_TABLE = str.maketrans("", "", string.punctuation)
-def _normalize_title(s: Any) -> str:
-    return " ".join(str(s).lower().translate(_PUNC_TABLE).split()) if isinstance(s, str) else ""
-
-# Test
-if __name__ == "__main__":
-    df = fetch_finviz_headlines(["AAPL", "MSFT", "NVDA"])
-    cols = ["ticker", "datetime", "headline", "source", "url"]
-    print(df[cols].head(10).to_string(index=False))

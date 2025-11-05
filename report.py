@@ -37,9 +37,43 @@ def evaluate_portfolio(
     log_returns: bool = True,   # Keep True if returns_daily are log returns
 ) -> PortfolioResult:
     """
-    Computes and summarizes a portfolio’s key performance metrics — including capital allocation, 
-    annualized expected return and volatility, historical VaR, and Sharpe ratio — based on given 
-    weights, forecasted μ/Σ, and daily returns.
+    Compute and summarize a portfolio's key risk/return metrics from weights and inputs.
+
+    Parameters
+    ----------
+    name : str
+        Portfolio label.
+    tickers : list[str]
+        Asset symbols (order must align with weights/columns).
+    weights : np.ndarray
+        Portfolio weights (typically sum to 1).
+    capital : float
+        Total capital to allocate; used to derive per-asset allocation.
+    mu_annual : pd.Series
+        Annualized expected returns μ for each ticker (index=tickers).
+    Sigma_annual : pd.DataFrame
+        Annualized covariance matrix Σ (rows/cols=tickers).
+    returns_daily : pd.DataFrame
+        Daily return matrix (index=dates, columns=tickers); use log returns if log_returns=True.
+    rf_annual : float, default 0.0
+        Annualized risk-free rate for Sharpe.
+    var_alpha : float, default 0.05
+        Tail probability for historical VaR (e.g., 0.05 → 95% VaR).
+    var_horizon_days : int, default 1
+        VaR holding period in trading days (e.g., 1, 5, 21).
+    log_returns : bool, default True
+        Whether `returns_daily` are log returns (affects multi-period aggregation in VaR).
+
+    Returns
+    -------
+    PortfolioResult
+        Structured summary with: weights, allocations, annualized expected return (μₚ),
+        annualized volatility (σₚ), historical VaR, and Sharpe ratio.
+
+    Notes
+    -----
+    - Assumes μ and Σ are annualized and consistent with each other.
+    - Historical VaR is computed from the realized daily portfolio return series.
     """
     w = np.asarray(weights, dtype=float)
     w_series = pd.Series(w, index=tickers, name="weight")
@@ -72,8 +106,27 @@ def evaluate_portfolio(
 
 def compile_report(results: List[PortfolioResult]) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Compile multiple portfolio results into a summary DataFrame (rows=strategies, columns=metrics).
-    Also return weights and allocations as wide-format tables for inspection.
+    Aggregate multiple PortfolioResult objects into summary, weights, and allocation tables.
+
+    Parameters
+    ----------
+    results : List[PortfolioResult]
+        Collection of evaluated portfolios to compare.
+
+    Returns
+    -------
+    summary : pd.DataFrame
+        One row per strategy with columns: ExpReturn(annual), Volatility(annual),
+        VaR(<confidence>, <days>D), Sharpe (rounded for display).
+    weights_table : pd.DataFrame
+        Wide table of weights (rows=tickers, columns=strategy names).
+    alloc_table : pd.DataFrame
+        Wide table of capital allocations (rows=tickers, columns=strategy names).
+
+    Notes
+    -----
+    - Rounds only the displayed `summary` values; underlying precision in `results` is unchanged.
+    - Assumes each `PortfolioResult.weights`/`allocation` is indexed by ticker.
     """
     rows = []
     W = []
