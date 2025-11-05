@@ -725,13 +725,14 @@ if run:
             key="dl_zip",
         )
 
-        st.download_button(
-            "Download News + Sentiment CSV",
-            data=df_scored.to_csv(index=False).encode("utf-8"),
-            file_name="news_sentiment.csv",
-            mime="text/csv",
-            key="dl_news_csv",
-        )
+        if news_open:
+            st.download_button(
+                "Download News + Sentiment CSV",
+                data=df_scored.to_csv(index=False).encode("utf-8"),
+                file_name="news_sentiment.csv",
+                mime="text/csv",
+                key="dl_news_csv",
+            )
 
         # Footer
         st.caption("Note: Enabling Prophet tuning can be slow. Try fewer tickers / shorter lookback / shorter horizon, or reduce grid size.")
