@@ -36,6 +36,11 @@ def evaluate_portfolio(
     var_horizon_days: int = 1,  # 1-day VaR; can set to 5/21 for 1-week/1-month
     log_returns: bool = True,   # Keep True if returns_daily are log returns
 ) -> PortfolioResult:
+    """
+    Computes and summarizes a portfolio’s key performance metrics — including capital allocation, 
+    annualized expected return and volatility, historical VaR, and Sharpe ratio — based on given 
+    weights, forecasted μ/Σ, and daily returns.
+    """
     w = np.asarray(weights, dtype=float)
     w_series = pd.Series(w, index=tickers, name="weight")
     alloc = (capital * w_series).rename("allocation")
