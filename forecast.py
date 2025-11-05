@@ -2,17 +2,22 @@
 import numpy as np
 import pandas as pd
 from prophet import Prophet
-from data import to_returns
-from risk import TRADING_DAYS_PER_YEAR as tdpy
 from prophet.diagnostics import cross_validation, performance_metrics
 from itertools import product
 from typing import Dict, List, Optional, Tuple
 import math
 
+
+# -----------------------------
+# Public Constant
+# -----------------------------
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
+tdpy = 252
 
 
-
+# -----------------------------
+# Help Functions
+# -----------------------------
 def _grid_dict_to_list(param_grid: Dict[str, List]) -> List[Dict]:
     """Convert {'a':[1,2], 'b':[3]} to [{'a':1,'b':3}, {'a':2,'b':3}]"""
     keys = list(param_grid.keys())
@@ -151,13 +156,9 @@ def _choose_best_params_with_cv(
 
     return best_params, best_score
 
-
-
-
-
-
-
-
+# -----------------------------
+# Forecast return based on prices and hyperparameters
+# -----------------------------
 def prophet_expected_returns(
     prices: pd.DataFrame,
     horizon: str = "3M",
@@ -210,7 +211,7 @@ def prophet_expected_returns(
                 period_days_trading=cv_period_days_eff,
                 metric=cv_metric,
             )
-            m = _fit_prophet_on_returns(df, best_params)  # 复用同一个构造器即可
+            m = _fit_prophet_on_returns(df, best_params)
         else:
             m = Prophet(
                 daily_seasonality=False,

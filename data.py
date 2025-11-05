@@ -1,7 +1,7 @@
 # data.py
-from __future__ import annotations  # Improve performance
+from __future__ import annotations
 
-from typing import Iterable, Literal, Tuple # Literal for restraint the value. Tuple for restraint data type and length
+from typing import Iterable, Literal
 import datetime as dt
 
 import numpy as np
