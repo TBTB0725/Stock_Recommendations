@@ -220,7 +220,8 @@ if show_adv:
     st.sidebar.subheader("Advanced: optional controls")
 
     # --- News & Sentiment ---
-    if st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False):
+    news_open = st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False)
+    if news_open:
         news_lookback = st.sidebar.number_input(
             "News lookback (days)", min_value=1, max_value=60, value=12, step=1
         )
@@ -236,7 +237,7 @@ if show_adv:
             help="Must support Chat Completions JSON mode (e.g., gpt-4.1-mini)."
         )
         openai_key = _get_openai_key()
-        if st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False) and not openai_key:
+        if news_open and not openai_key:
             st.sidebar.warning("No OPENAI_API_KEY")
 
     # --- Lookback days ---
@@ -618,7 +619,7 @@ if run:
             st.altair_chart(chart_vol, use_container_width=True)
         
         # News & Sentiment
-        if st.sidebar.checkbox("Fetch Finviz news & score sentiment", value=False):
+        if news_open:
             if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI"):
                 st.warning("No OPENAI_API_KEY")
 
