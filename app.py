@@ -49,73 +49,49 @@ st.set_page_config(
     layout="wide",
 )
 
+st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
+st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
+
+
 # =============== Agent Mode ===============
 def _mount_agent_mode():
     st.header("🤖 Agent Mode — QuantChat")
 
-    # API key
+    # 1) 设置 OpenAI Key（优先 secrets，再读环境变量）
     key = _get_openai_key()
     if key:
         os.environ["OPENAI_API_KEY"] = key
-    else:
-        st.warning("No OPENAI_API_KEY found. Set it in secrets or env variables.")
 
-    # ---- 初始化会话态：1 个 agent + 历史消息 ----
-    if "qc_agent" not in st.session_state:
-        st.session_state["qc_agent"] = ChatStockAgent(
+    # 2) 初始化全局的聊天 Agent + 前端对话历史（只初始化一次）
+    if "quant_agent" not in st.session_state:
+        st.session_state["quant_agent"] = ChatStockAgent(
             model="gpt-4.1-mini",
-            verbose=True,
+            verbose=True,   # 你如果不想后端打 log，可以改成 False
         )
-    if "qc_history" not in st.session_state:
-        # 存简单结构：[{"role":"user"/"assistant","content":str}, ...]
-        st.session_state["qc_history"] = []
+        st.session_state["chat_messages"] = []
 
-    agent = st.session_state["qc_agent"]
+    agent = st.session_state["quant_agent"]
 
-    # ---- 顶部工具栏：重置对话 ----
-    cols = st.columns([1, 6])
-    with cols[0]:
-        if st.button("🔁 Reset conversation"):
+    # 3) 提供一个重置会话按钮（清空 agent 内部 memory + UI 历史）
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Reset conversation", use_container_width=True):
             agent.reset()
-            st.session_state["qc_history"] = []
-            # 兼容新旧版本
-            if hasattr(st, "rerun"):
-                st.rerun()
-            else:
-                st.experimental_rerun()
+            st.session_state["chat_messages"] = []
+            st.experimental_rerun()
+    with col2:
+        st.caption(
+            "Ask quantitative questions I can compute with my tools: "
+            "prices, returns, covariance, optimization, VaR, Sharpe, forecasts, news sentiment."
+        )
 
-    # ---- 历史消息区域（ChatGPT 风格）----
-    for msg in st.session_state["qc_history"]:
+    st.divider()
+
+    # 4) 回放历史消息
+    for msg in st.session_state["chat_messages"]:
         role = msg["role"]
         content = msg["content"]
-        avatar = "🧑" if role == "user" else "🤖"
-        with st.chat_message("user" if role == "user" else "assistant", avatar=avatar):
-            st.markdown(content)
-
-    # ---- 输入框 ----
-    user_input = st.chat_input("Ask QuantChat anything within its quantitative scope...")
-    if user_input:
-        # 追加用户消息
-        st.session_state["qc_history"].append(
-            {"role": "user", "content": user_input}
-        )
-
-        # 调 agent（内部会用 tools，不要自己动工具链）
-        try:
-            reply = agent.ask(user_input)
-        except Exception as e:
-            reply = f"Agent failed with error: {e}"
-
-        # 追加 agent 回复
-        st.session_state["qc_history"].append(
-            {"role": "assistant", "content": reply}
-        )
-
-        # 立刻刷新界面显示新消息
-        if hasattr(st, "rerun"):
-            st.rerun()
-        else:
-            st.experimental_rerun()
+        # 映射到 Streamlit chat roles（user / assistant）
 
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
@@ -125,8 +101,6 @@ if agent_mode:
     st.stop()  # 关键：直接终止后续原页面渲染
 # ==============================================================
 
-st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
-st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
 
 # --------------------------
 # Sidebar — Parameters
