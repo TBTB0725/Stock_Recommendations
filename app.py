@@ -49,13 +49,24 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
-st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
-
-
 # =============== Agent Mode ===============
 def _mount_agent_mode():
-    st.header("🤖 Agent Mode — QuantChat")
+    # 延迟导入，避免 agent 出问题拖垮整页
+    try:
+        from agent.agent import ChatStockAgent
+    except Exception as e:
+        st.error(
+            "Failed to import ChatStockAgent from agent.agent.\n\n"
+            "请检查：\n"
+            "1) agent/agent.py 里确实定义了 ChatStockAgent\n"
+            "2) 存在 agent/__init__.py\n"
+            "3) 依赖 (openai, pandas, numpy 等) 已安装。\n\n"
+            f"错误信息: {e}"
+        )
+        return
+
+    # 顶部只显示这一行标题
+    st.title("🤖 Agent Mode — QuantChat")
 
     # API key
     key = _get_openai_key()
@@ -64,58 +75,80 @@ def _mount_agent_mode():
     else:
         st.warning("No OPENAI_API_KEY found. Set it in secrets or env variables.")
 
-    # ---- 初始化会话态：1 个 agent + 历史消息 ----
+    # ---- 初始化会话态 ----
     if "qc_agent" not in st.session_state:
         st.session_state["qc_agent"] = ChatStockAgent(
             model="gpt-4.1-mini",
             verbose=True,
         )
     if "qc_history" not in st.session_state:
-        # 存简单结构：[{"role":"user"/"assistant","content":str}, ...]
+        # 每条：{"role": "user"|"assistant", "content": str}
         st.session_state["qc_history"] = []
+    if "qc_need_reply" not in st.session_state:
+        st.session_state["qc_need_reply"] = False
 
     agent = st.session_state["qc_agent"]
+    history = st.session_state["qc_history"]
 
-    # ---- 顶部工具栏：重置对话 ----
-    cols = st.columns([1, 6])
-    with cols[0]:
+    # ---- 工具栏：Reset ----
+    top_cols = st.columns([1, 6])
+    with top_cols[0]:
         if st.button("🔁 Reset conversation"):
             agent.reset()
             st.session_state["qc_history"] = []
-            # 兼容新旧版本
+            st.session_state["qc_need_reply"] = False
             if hasattr(st, "rerun"):
                 st.rerun()
             else:
                 st.experimental_rerun()
 
-    # ---- 历史消息区域（ChatGPT 风格）----
-    for msg in st.session_state["qc_history"]:
-        role = msg["role"]
-        content = msg["content"]
-        avatar = "🧑" if role == "user" else "🤖"
-        with st.chat_message("user" if role == "user" else "assistant", avatar=avatar):
-            st.markdown(content)
+    # ---- 一个小函数：左右对齐渲染气泡 ----
+    def render_msg(role: str, content: str):
+        if role == "user":
+            # 人在左
+            left, right = st.columns([7, 3])
+            with left:
+                st.markdown("**You**")
+                st.markdown(content)
+        else:
+            # Agent 在右
+            left, right = st.columns([3, 7])
+            with right:
+                st.markdown("**QuantChat**")
+                st.markdown(content)
 
-    # ---- 输入框 ----
+    # ---- 先渲染已有历史消息（保证“我发的立刻能看到”）----
+    for msg in history:
+        render_msg(msg["role"], msg["content"])
+
+    # ---- 如果有待回复的问题：此时 history 已显示，然后再算 Agent ----
+    if st.session_state["qc_need_reply"]:
+        # 只处理“最后一条是 user 且还没对应回复”的情况
+        if history and history[-1]["role"] == "user":
+            question = history[-1]["content"]
+            with st.spinner("QuantChat is thinking..."):
+                try:
+                    reply = agent.ask(question)
+                except Exception as e:
+                    reply = f"Agent failed with error: {e}"
+            st.session_state["qc_history"].append(
+                {"role": "assistant", "content": reply}
+            )
+        # 无论成功失败，这轮 pending 清掉，重新渲染（此时双方消息都会出现）
+        st.session_state["qc_need_reply"] = False
+        if hasattr(st, "rerun"):
+            st.rerun()
+        else:
+            st.experimental_rerun()
+        return  # 本轮后面不再渲染输入框
+
+    # ---- 底部输入框：提交后只追加“我说的”，标记需要回复，然后立刻 rerun ----
     user_input = st.chat_input("Ask QuantChat anything within its quantitative scope...")
     if user_input:
-        # 追加用户消息
         st.session_state["qc_history"].append(
             {"role": "user", "content": user_input}
         )
-
-        # 调 agent（内部会用 tools，不要自己动工具链）
-        try:
-            reply = agent.ask(user_input)
-        except Exception as e:
-            reply = f"Agent failed with error: {e}"
-
-        # 追加 agent 回复
-        st.session_state["qc_history"].append(
-            {"role": "assistant", "content": reply}
-        )
-
-        # 立刻刷新界面显示新消息
+        st.session_state["qc_need_reply"] = True
         if hasattr(st, "rerun"):
             st.rerun()
         else:
@@ -129,6 +162,11 @@ if agent_mode:
     st.stop()  # 关键：直接终止后续原页面渲染
 # ==============================================================
 
+# --------------------------
+# Streamlit Page Title
+# --------------------------
+st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
+st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
 
 # --------------------------
 # Sidebar — Parameters
