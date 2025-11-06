@@ -5,6 +5,7 @@ import datetime as dt
 from typing import Optional, Dict, List
 import io
 import zipfile
+import html
 
 import numpy as np
 import pandas as pd
@@ -65,15 +66,55 @@ def _mount_agent_mode():
         )
         return
 
-    # 顶部只显示这一行标题
+    # 只在 Agent 模式显示的标题
     st.title("🤖 Agent Mode — QuantChat")
 
-    # API key
+    # OpenAI API key
     key = _get_openai_key()
     if key:
         os.environ["OPENAI_API_KEY"] = key
     else:
         st.warning("No OPENAI_API_KEY found. Set it in secrets or env variables.")
+
+    # ---- 全局聊天样式（只注入一次）----
+    if "qc_chat_css" not in st.session_state:
+        st.markdown(
+            """
+            <style>
+            .chat-container {
+                margin: 0.25rem 0;
+            }
+            .chat-label {
+                font-size: 0.72rem;
+                color: #6b7280;
+                margin-bottom: 0.12rem;
+            }
+            .chat-bubble {
+                display: inline-block;
+                padding: 0.55rem 0.8rem;
+                border-radius: 0.8rem;
+                max-width: 100%;
+                font-size: 0.95rem;
+                line-height: 1.5;
+                word-wrap: break-word;
+                box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+            }
+            .chat-bubble.assistant {
+                background-color: #f5f5f7;
+                color: #111827;
+                border-top-left-radius: 0.25rem;
+            }
+            .chat-bubble.user {
+                background-color: #2563eb10;
+                border: 1px solid #2563eb40;
+                color: #111827;
+                border-top-right-radius: 0.25rem;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.session_state["qc_chat_css"] = True
 
     # ---- 初始化会话态 ----
     if "qc_agent" not in st.session_state:
@@ -90,7 +131,7 @@ def _mount_agent_mode():
     agent = st.session_state["qc_agent"]
     history = st.session_state["qc_history"]
 
-    # ---- 工具栏：Reset ----
+    # ---- 顶部 Reset 按钮 ----
     top_cols = st.columns([1, 6])
     with top_cols[0]:
         if st.button("🔁 Reset conversation"):
@@ -102,28 +143,43 @@ def _mount_agent_mode():
             else:
                 st.experimental_rerun()
 
-    # ---- 一个小函数：左右对齐渲染气泡 ----
+    # ---- 渲染单条消息（你在右，机器人在左，加气泡）----
     def render_msg(role: str, content: str):
-        if role == "user":
-            # 人在左
+        safe = html.escape(content)
+
+        if role == "assistant":
+            # 机器人在左
             left, right = st.columns([7, 3])
             with left:
-                st.markdown("**You**")
-                st.markdown(content)
+                st.markdown(
+                    f"""
+                    <div class="chat-container">
+                        <div class="chat-label">QuantChat</div>
+                        <div class="chat-bubble assistant">{safe}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
         else:
-            # Agent 在右
+            # 你在右
             left, right = st.columns([3, 7])
             with right:
-                st.markdown("**QuantChat**")
-                st.markdown(content)
+                st.markdown(
+                    f"""
+                    <div class="chat-container" style="text-align: right;">
+                        <div class="chat-label">You</div>
+                        <div class="chat-bubble user">{safe}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-    # ---- 先渲染已有历史消息（保证“我发的立刻能看到”）----
+    # ---- 先渲染历史，让“我说的话”总是立刻可见 ----
     for msg in history:
         render_msg(msg["role"], msg["content"])
 
-    # ---- 如果有待回复的问题：此时 history 已显示，然后再算 Agent ----
+    # ---- 如果标记了需要 Agent 回复：这轮仅负责算回复 ----
     if st.session_state["qc_need_reply"]:
-        # 只处理“最后一条是 user 且还没对应回复”的情况
         if history and history[-1]["role"] == "user":
             question = history[-1]["content"]
             with st.spinner("QuantChat is thinking..."):
@@ -134,15 +190,15 @@ def _mount_agent_mode():
             st.session_state["qc_history"].append(
                 {"role": "assistant", "content": reply}
             )
-        # 无论成功失败，这轮 pending 清掉，重新渲染（此时双方消息都会出现）
+
         st.session_state["qc_need_reply"] = False
         if hasattr(st, "rerun"):
             st.rerun()
         else:
             st.experimental_rerun()
-        return  # 本轮后面不再渲染输入框
+        return
 
-    # ---- 底部输入框：提交后只追加“我说的”，标记需要回复，然后立刻 rerun ----
+    # ---- 底部输入：提交后只加用户消息，立刻重渲染，再单独一轮算回复 ----
     user_input = st.chat_input("Ask QuantChat anything within its quantitative scope...")
     if user_input:
         st.session_state["qc_history"].append(
