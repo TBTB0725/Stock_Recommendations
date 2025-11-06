@@ -122,6 +122,249 @@ ALLOWED_KW = {
     },
 }
 
+# -------------------------
+# Tool registration
+# -------------------------
+TOOLS_SPEC = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_prices_tool",
+            "description": "Fetch historical prices.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "lookback_days": {"type": "integer", "default": 252},
+                    "end": {"type": ["string", "null"]},
+                    "pad_ratio": {"type": "number", "default": 2.0},
+                    "auto_business_align": {"type": "boolean", "default": True},
+                    "use_adjusted_close": {"type": "boolean", "default": True},
+                },
+                "required": ["tickers"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "to_returns_tool",
+            "description": "Convert price DataFrame to returns DataFrame. Use {'__ref__': <id>} for 'prices'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prices": {"type": "object"},
+                    "method": {"type": "string", "enum": ["log", "simple"], "default": "log"},
+                    "dropna": {"type": "boolean", "default": True},
+                },
+                "required": ["prices"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forecast_tool",
+            "description": "Forecast annualized expected returns (Prophet).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prices": {"type": "object"},
+                    "horizon": {
+                        "type": "string",
+                        "enum": ["1D","5D","1W","2W","1M","3M","6M","1Y"],
+                        "default": "3M"
+                    },
+                    "tune": {"type": "boolean", "default": False},
+                },
+                "required": ["prices"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "risk_tool",
+            "description": "Compute (annualized) covariance matrix from returns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "returns": {"type": "object"},
+                    "annualize": {"type": "boolean", "default": True},
+                    "trading_days_per_year": {"type": "integer", "default": 252},
+                },
+                "required": ["returns"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "optimize_tool",
+            "description": "Portfolio optimization ('min_var'|'max_ret'|'max_sharpe').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objective": {
+                        "type": "string",
+                        "enum": ["min_var", "max_ret", "max_sharpe"]
+                    },
+                    "mu_annual": {"type": ["object", "null"]},
+                    "Sigma_annual": {"type": ["object", "null"]},
+                    "rf": {"type": "number", "default": 0.0},
+                    "cons": {"type": ["object", "null"]},
+                    "eps": {"type": "number", "default": 1e-12},
+                    "restarts": {"type": "integer", "default": 0},
+                    "seed": {"type": "integer", "default": 0},
+                },
+                "required": ["objective"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evaluate_portfolio_tool",
+            "description": "Evaluate portfolio (VaR, μ, σ, Sharpe, allocations). Use {'__ref__': <id>} for large inputs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "default": "Portfolio"},
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "weights": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": "Weight vector aligned with `tickers`.",
+                    },
+                    "capital": {"type": "number"},
+                    "mu_annual": {"type": "object"},
+                    "Sigma_annual": {"type": "object"},
+                    "returns_daily": {"type": "object"},
+                    "rf_annual": {"type": "number", "default": 0.0},
+                    "var_alpha": {"type": "number", "default": 0.05},
+                    "var_horizon_days": {"type": "integer", "default": 1},
+                    "log_returns": {"type": "boolean", "default": True},
+                },
+                "required": [
+                    "name",
+                    "tickers",
+                    "weights",
+                    "capital",
+                    "mu_annual",
+                    "Sigma_annual",
+                    "returns_daily",
+                ],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compile_report_tool",
+            "description": "Aggregate multiple PortfolioResult into summary tables.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "results": {"type": "array", "items": {"type": "object"}}
+                },
+                "required": ["results"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_news_tool",
+            "description": "Fetch recent Finviz headlines for tickers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "lookback_days": {"type": "integer", "default": 3},
+                    "per_ticker_count": {"type": "integer", "default": 15},
+                    "final_cap": {"type": "integer", "default": 200},
+                    "sleep_s": {"type": "number", "default": 0.5},
+                },
+                "required": ["tickers"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sentiment_score_titles_tool",
+            "description": "Score news titles' near-term impact. Accepts DataFrame/list[dict]/list[str]/str (or reference).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "object"},
+                    "model_name": {"type": "string", "default": "gpt-4.1-mini"},
+                    "api_key": {"type": ["string", "null"], "default": None},
+                    "default_ticker": {"type": ["string", "null"], "default": None},
+                    "limit": {"type": "integer", "default": 200},
+                },
+                "required": ["items"],
+            },
+        },
+    },
+]
+
+TOOL_FUNCS = {
+    "fetch_prices_tool": T.fetch_prices_tool,
+    "to_returns_tool": T.to_returns_tool,
+    "forecast_tool": T.forecast_tool,
+    "risk_tool": T.risk_tool,
+    "optimize_tool": T.optimize_tool,
+    "evaluate_portfolio_tool": T.evaluate_portfolio_tool,
+    "compile_report_tool": T.compile_report_tool,
+    "fetch_news_tool": T.fetch_news_tool,
+    "sentiment_score_titles_tool": T.sentiment_score_titles_tool,
+}
+
+# ---------------------
+# System prompt
+# ---------------------
+SCOPE_GUARD_PROMPT = """
+You are QuantChat, a conversational quant agent with access to a fixed set of tools.
+
+Hard rules (must follow):
+
+1) Scope
+   - Only answer tasks that can be solved using these tools:
+     - price data → returns
+     - Prophet-based expected returns
+     - covariance / risk metrics
+     - portfolio optimization (min_var / max_ret / max_sharpe)
+     - portfolio evaluation (μ, σ, Sharpe, VaR)
+     - news + sentiment scoring
+   - For anything else (chitchat, health, travel, generic coding, etc.), reply:
+     "I only answer quantitative questions I can compute with my tools."
+
+2) Inputs
+   - If key inputs are missing (e.g. tickers, capital, horizon, rf, weights),
+     ask a SHORT follow-up question to get them.
+
+3) Tool usage
+   - Prefer calling tools whenever a numeric or data-based answer is needed.
+   - Use as few tool calls as possible to reliably answer the question.
+   - You may use {"__ref__": "<object_id>"} to refer to previous tool outputs.
+
+4) Numerical answers
+   - Never invent numbers.
+   - Never output a numeric result unless it comes from a successful tool call
+     in the current conversation context.
+   - If a tool fails or data is insufficient:
+       - try a minimal alternative tool chain once;
+       - otherwise briefly explain what is missing or that the computation failed.
+
+5) Communication style
+   - Be concise, precise, and quantitative.
+   - State assumptions explicitly (dates, horizons, confidence levels, units).
+   - Refuse gracefully when out-of-scope using one short sentence.
+
+Always obey these rules before answering the user.
+"""
+
 # ----------------------------
 # Memory object repository
 # ----------------------------
@@ -148,7 +391,7 @@ class ObjectStore:
             return [self.resolve_refs(v) for v in args]
         return args
     
-    
+
 # ---------------------------------
 # Ensure the correctness of param
 # ---------------------------------
@@ -268,208 +511,6 @@ def _coerce_preview(x: Any) -> Any:
         return {k: _coerce_preview(v) for k, v in x.items()}
 
     return str(type(x))
-
-# ----------------------------
-# 工具注册（给 OpenAI function calling）
-# ----------------------------
-# 定义“函数”参数模式（JSON Schema）。只列关键参数；其余用默认值。
-TOOLS_SPEC = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_prices_tool",
-            "description": "Fetch historical prices.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tickers": {"type": "array", "items": {"type": "string"}},
-                    "lookback_days": {"type": "integer", "default": 252},
-                    "end": {"type": ["string", "null"]},
-                    "pad_ratio": {"type": "number", "default": 2.0},
-                    "auto_business_align": {"type": "boolean", "default": True},
-                    "use_adjusted_close": {"type": "boolean", "default": True},
-                },
-                "required": ["tickers"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "to_returns_tool",
-            "description": "Convert price DataFrame to returns DataFrame. Use {'__ref__': <id>} for 'prices'.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prices": {"type": "object"},
-                    "method": {"type": "string", "enum": ["log", "simple"], "default": "log"},
-                    "dropna": {"type": "boolean", "default": True},
-                },
-                "required": ["prices"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "forecast_tool",
-            "description": "Forecast annualized expected returns (Prophet).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "prices": {"type": "object"},
-                    "horizon": {
-                        "type": "string",
-                        "enum": ["1D","5D","1W","2W","1M","3M","6M","1Y"],
-                        "default": "3M"
-                    },
-                    "tune": {"type": "boolean", "default": False},
-                },
-                "required": ["prices"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "risk_tool",
-            "description": "Compute (annualized) covariance matrix from returns.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "returns": {"type": "object"},
-                    "annualize": {"type": "boolean", "default": True},
-                    "trading_days_per_year": {"type": "integer", "default": 252},
-                },
-                "required": ["returns"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "optimize_tool",
-            "description": "Portfolio optimization ('min_var'|'max_ret'|'max_sharpe').",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "objective": {"type": "string", "enum": ["min_var", "max_ret", "max_sharpe"]},
-                    "mu_annual": {"type": ["object", "null"]},
-                    "Sigma_annual": {"type": ["object", "null"]},
-                    "rf": {"type": "number", "default": 0.0},
-                },
-                "required": ["objective"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "evaluate_portfolio_tool",
-            "description": "Evaluate portfolio (VaR, μ, σ, Sharpe, allocations).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "default": "Portfolio"},
-                    "tickers": {"type": "array", "items": {"type": "string"}},
-                    "weights": {"type": "object"},
-                    "capital": {"type": "number"},
-                    "mu_annual": {"type": "object"},
-                    "Sigma_annual": {"type": "object"},
-                    "returns_daily": {"type": "object"},
-                    "rf_annual": {"type": "number", "default": 0.0},
-                    "var_alpha": {"type": "number", "default": 0.05},
-                    "var_horizon_days": {"type": "integer", "default": 1},
-                    "log_returns": {"type": "boolean", "default": True},
-                },
-                "required": ["tickers","weights","capital","mu_annual","Sigma_annual","returns_daily"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "compile_report_tool",
-            "description": "Aggregate multiple PortfolioResult into summary tables.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "results": {"type": "array", "items": {"type": "object"}}
-                },
-                "required": ["results"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_news_tool",
-            "description": "Fetch recent Finviz headlines for tickers.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "tickers": {"type": "array", "items": {"type": "string"}},
-                    "lookback_days": {"type": "integer", "default": 3},
-                    "per_ticker_count": {"type": "integer", "default": 15},
-                    "final_cap": {"type": "integer", "default": 200},
-                    "sleep_s": {"type": "number", "default": 0.5},
-                },
-                "required": ["tickers"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "sentiment_score_titles_tool",
-            "description": "Score news titles' near-term impact. Accepts DataFrame/list[dict]/list[str]/str.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "items": {"type": "object"},
-                    "model_name": {"type": "string", "default": "gpt-4.1-mini"},
-                    "api_key": {"type": ["string", "null"], "default": None},
-                    "default_ticker": {"type": ["string", "null"], "default": None},
-                    "limit": {"type": "integer", "default": 200},
-                },
-                "required": ["items"],
-            },
-        },
-    },
-]
-
-# 工具名字 -> 实际可调用函数（保持你 tools.py 的签名）
-TOOL_FUNCS = {
-    "fetch_prices_tool": T.fetch_prices_tool,
-    "to_returns_tool": T.to_returns_tool,
-    "forecast_tool": T.forecast_tool,
-    "risk_tool": T.risk_tool,
-    "optimize_tool": T.optimize_tool,
-    "evaluate_portfolio_tool": T.evaluate_portfolio_tool,
-    "compile_report_tool": T.compile_report_tool,
-    "fetch_news_tool": T.fetch_news_tool,
-    "sentiment_score_titles_tool": T.sentiment_score_titles_tool,
-}
-
-# ----------------------------
-# 系统提示：严格范围 & 使用工具
-# ----------------------------
-SCOPE_GUARD_PROMPT = """
-You are QuantChat, a conversational **quant agent**.
-You MUST follow these hard rules:
-
-1) **Only** handle tasks that are computable via your tools: prices→returns, Prophet expected returns, covariance, optimization, portfolio evaluation (μ,σ,Sharpe, VaR), news & sentiment.
-2) If the user asks anything outside this scope (health, travel, generic coding, jokes, etc.), **refuse** with a brief sentence: 
-   "I only answer quantitative questions I can compute with my tools."
-3) If required inputs are missing (e.g., tickers, horizon, capital), **ask a short follow-up** first.
-4) Prefer **tool calls** to ground your answers. You may ask brief clarifying questions without tools.
-5) When you have sufficient info, call tools in minimal steps and then reply with a concise, user-facing summary.
-6) You may reference previous results using {"__ref__": "<object_id>"}; never invent data.
-7) Be numerically explicit about dates, horizons, units, and confidence levels (e.g., “VaR(95%, 1d)”).
-8) Never output a numeric result unless it was computed via a successful tool call in this conversation; if a tool fails, try a minimal alternative tool chain or ask for the missing inputs.
-
-Output style: crisp, factual, computable. Refuse gracefully when out-of-scope.
-"""
 
 # ----------------------------
 # 对话式 Agent（函数调用循环）
