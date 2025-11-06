@@ -5,7 +5,6 @@ import datetime as dt
 from typing import Optional, Dict, List
 import io
 import zipfile
-import html
 
 import numpy as np
 import pandas as pd
@@ -52,153 +51,70 @@ st.set_page_config(
 
 # =============== Agent Mode ===============
 def _mount_agent_mode():
-    # 只在 Agent 模式显示的标题（原来的 Stock_Recommendations 不会出现，因为上面 st.stop 了）
-    st.title("🤖 Agent Mode — QuantChat")
+    st.header("🤖 Agent Mode — QuantChat")
 
-    # OpenAI API key
+    # API key
     key = _get_openai_key()
     if key:
         os.environ["OPENAI_API_KEY"] = key
     else:
         st.warning("No OPENAI_API_KEY found. Set it in secrets or env variables.")
 
-    # ---- 全局聊天样式（只注入一次）----
-    if "qc_chat_css" not in st.session_state:
-        st.markdown(
-            """
-            <style>
-            .qc-chat-row {
-                display: flex;
-                margin: 0.4rem 0;
-            }
-            .qc-chat-row.left {
-                justify-content: flex-start;
-            }
-            .qc-chat-row.right {
-                justify-content: flex-end;
-            }
-            .qc-bubble {
-                max-width: 72%;
-                padding: 0.6rem 0.9rem;
-                border-radius: 1rem;
-                box-shadow: 0 2px 6px rgba(15,23,42,0.10);
-                font-size: 0.95rem;
-                line-height: 1.5;
-                word-wrap: break-word;
-                word-break: break-word;
-            }
-            .qc-bubble.assistant {
-                background-color: #f3f4f6 !important;
-                color: #111827 !important;
-                border-top-left-radius: 0.3rem;
-            }
-            .qc-bubble.user {
-                background-color: #2563eb !important;
-                color: #ffffff !important;
-                border-top-right-radius: 0.3rem;
-            }
-            .qc-label {
-                font-size: 0.70rem;
-                font-weight: 600;
-                opacity: 0.8;
-                margin-bottom: 0.12rem;
-            }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.session_state["qc_chat_css"] = True
-
-    # ---- 初始化会话态 ----
+    # ---- 初始化会话态：1 个 agent + 历史消息 ----
     if "qc_agent" not in st.session_state:
         st.session_state["qc_agent"] = ChatStockAgent(
             model="gpt-4.1-mini",
             verbose=True,
         )
     if "qc_history" not in st.session_state:
-        st.session_state["qc_history"] = []   # [{role, content}]
-    if "qc_need_reply" not in st.session_state:
-        st.session_state["qc_need_reply"] = False
+        # 存简单结构：[{"role":"user"/"assistant","content":str}, ...]
+        st.session_state["qc_history"] = []
 
     agent = st.session_state["qc_agent"]
-    history = st.session_state["qc_history"]
 
-    # ---- 顶部 Reset 按钮 ----
+    # ---- 顶部工具栏：重置对话 ----
     cols = st.columns([1, 6])
     with cols[0]:
         if st.button("🔁 Reset conversation"):
             agent.reset()
             st.session_state["qc_history"] = []
-            st.session_state["qc_need_reply"] = False
-            try:
+            # 兼容新旧版本
+            if hasattr(st, "rerun"):
                 st.rerun()
-            except Exception:
+            else:
                 st.experimental_rerun()
-            return
 
-    # ---- 渲染单条消息（左机器人 / 右用户，带气泡）----
-    def render_msg(role: str, content: str):
-        safe = html.escape(content).replace("\n", "<br>")
+    # ---- 历史消息区域（ChatGPT 风格）----
+    for msg in st.session_state["qc_history"]:
+        role = msg["role"]
+        content = msg["content"]
+        avatar = "🧑" if role == "user" else "🤖"
+        with st.chat_message("user" if role == "user" else "assistant", avatar=avatar):
+            st.markdown(content)
 
-        if role == "assistant":
-            st.markdown(
-                f"""
-                <div class="qc-chat-row left">
-                    <div class="qc-bubble assistant">
-                        <div class="qc-label">QuantChat</div>
-                        <div>{safe}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f"""
-                <div class="qc-chat-row right">
-                    <div class="qc-bubble user">
-                        <div class="qc-label">You</div>
-                        <div>{safe}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-    # ---- 先渲染历史（保证用户发出的内容总是立刻可见）----
-    for msg in history:
-        render_msg(msg["role"], msg["content"])
-
-    # ---- 如果上一轮标记了需要回复，这一轮只负责调用 agent ----
-    if st.session_state["qc_need_reply"]:
-        if history and history[-1]["role"] == "user":
-            question = history[-1]["content"]
-            with st.spinner("QuantChat is thinking..."):
-                try:
-                    reply = agent.ask(question)
-                except Exception as e:
-                    reply = f"Agent failed with error: {e}"
-            st.session_state["qc_history"].append(
-                {"role": "assistant", "content": reply}
-            )
-
-        st.session_state["qc_need_reply"] = False
-        try:
-            st.rerun()
-        except Exception:
-            st.experimental_rerun()
-        return
-
-    # ---- 输入框：提交后只加用户消息并标记需要回复，然后立即 rerun ----
+    # ---- 输入框 ----
     user_input = st.chat_input("Ask QuantChat anything within its quantitative scope...")
     if user_input:
+        # 追加用户消息
         st.session_state["qc_history"].append(
             {"role": "user", "content": user_input}
         )
-        st.session_state["qc_need_reply"] = True
+
+        # 调 agent（内部会用 tools，不要自己动工具链）
         try:
+            reply = agent.ask(user_input)
+        except Exception as e:
+            reply = f"Agent failed with error: {e}"
+
+        # 追加 agent 回复
+        st.session_state["qc_history"].append(
+            {"role": "assistant", "content": reply}
+        )
+
+        # 立刻刷新界面显示新消息
+        if hasattr(st, "rerun"):
             st.rerun()
-        except Exception:
+        else:
             st.experimental_rerun()
 
 
@@ -209,9 +125,6 @@ if agent_mode:
     st.stop()  # 关键：直接终止后续原页面渲染
 # ==============================================================
 
-# --------------------------
-# Streamlit Page Title
-# --------------------------
 st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
 st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / Max-Return / Max-Sharpe strategies, and visualize results.")
 
