@@ -53,22 +53,35 @@ st.set_page_config(
 # Agent mode
 # --------------------------
 def _mount_agent_mode():
-    # 延迟导入，避免 import 问题拖垮整个 app
-    try:
-        from agent.agent import ChatStockAgent
-    except Exception as e:
-        st.error(
-            "Failed to import ChatStockAgent from agent.agent.\n\n"
-            "请检查：\n"
-            "1) agent/agent.py 中是否定义 ChatStockAgent\n"
-            "2) agent/__init__.py 是否存在\n"
-            "3) 依赖 (openai, pandas, numpy 等) 是否已安装。\n\n"
-            f"Raw error: {e}"
-        )
-        return
+    # 顶部一行：左标题，右 Reset（单行）
+    header_col, reset_col = st.columns([8, 1.5])
+    with header_col:
+        st.markdown("## 🤖 Agent Mode — QuantChat")
+    with reset_col:
+        if st.button("↺ Reset", key="qc_reset", use_container_width=True):
+            if "qc_agent" in st.session_state:
+                st.session_state["qc_agent"].reset()
+            st.session_state["qc_history"] = []
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
 
-    # 页面抬头（Agent 模式自己的标题）
-    st.header("🤖 Agent Mode — QuantChat")
+    # 可选：让按钮更扁一点（减少那种大卡片感）
+    st.markdown(
+        """
+        <style>
+        /* 缩小顶部 Reset 按钮的高度和字体，让它更像工具栏按钮 */
+        button[kind="secondary"]#qc_reset, 
+        button[data-baseweb="button"]#qc_reset {
+            padding-top: 0.3rem;
+            padding-bottom: 0.3rem;
+            font-size: 0.85rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     # API key
     key = _get_openai_key()
