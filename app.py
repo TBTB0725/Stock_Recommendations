@@ -42,15 +42,32 @@ def _get_openai_key() -> Optional[str]:
     return os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI")
 
 # --------------------------
-# Streamlit Page Title
+# Streamlit Page Setup
 # --------------------------
 st.set_page_config(
     page_title="Stock_Recommendations",
     layout="wide",
 )
 
-# =============== Agent Mode ===============
+# --------------------------
+# Agent mode
+# --------------------------
 def _mount_agent_mode():
+    # 延迟导入，避免 import 问题拖垮整个 app
+    try:
+        from agent.agent import ChatStockAgent
+    except Exception as e:
+        st.error(
+            "Failed to import ChatStockAgent from agent.agent.\n\n"
+            "请检查：\n"
+            "1) agent/agent.py 中是否定义 ChatStockAgent\n"
+            "2) agent/__init__.py 是否存在\n"
+            "3) 依赖 (openai, pandas, numpy 等) 是否已安装。\n\n"
+            f"Raw error: {e}"
+        )
+        return
+
+    # 页面抬头（Agent 模式自己的标题）
     st.header("🤖 Agent Mode — QuantChat")
 
     # API key
@@ -60,31 +77,44 @@ def _mount_agent_mode():
     else:
         st.warning("No OPENAI_API_KEY found. Set it in secrets or env variables.")
 
-    # ---- 初始化会话态：1 个 agent + 历史消息 ----
+    # 初始化会话状态：一个 agent + 历史消息
     if "qc_agent" not in st.session_state:
         st.session_state["qc_agent"] = ChatStockAgent(
             model="gpt-4.1-mini",
             verbose=True,
         )
     if "qc_history" not in st.session_state:
-        # 存简单结构：[{"role":"user"/"assistant","content":str}, ...]
+        # 存简单结构：[{"role": "user"/"assistant", "content": str}, ...]
         st.session_state["qc_history"] = []
 
     agent = st.session_state["qc_agent"]
 
-    # ---- 顶部工具栏：重置对话 ----
+    # Reset 按钮
     cols = st.columns([1, 6])
     with cols[0]:
         if st.button("🔁 Reset conversation"):
             agent.reset()
             st.session_state["qc_history"] = []
-            # 兼容新旧版本
+            # 用新 API，兼容老版本
             if hasattr(st, "rerun"):
                 st.rerun()
             else:
                 st.experimental_rerun()
 
-    # ---- 历史消息区域（ChatGPT 风格）----
+    # （可选）一点 CSS，强化左右区分（Streamlit 自带 user=右，assistant=左，这里只是稍微调下宽度）
+    st.markdown(
+        """
+        <style>
+        /* 限制对话最大宽度，让布局更像聊天 */
+        [data-testid="stChatMessage"] > div {
+            max-width: 900px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 先把历史消息画出来
     for msg in st.session_state["qc_history"]:
         role = msg["role"]
         content = msg["content"]
@@ -92,30 +122,34 @@ def _mount_agent_mode():
         with st.chat_message("user" if role == "user" else "assistant", avatar=avatar):
             st.markdown(content)
 
-    # ---- 输入框 ----
+    # 输入框（始终在最下面）
     user_input = st.chat_input("Ask QuantChat anything within its quantitative scope...")
-    if user_input:
-        # 追加用户消息
+
+    if user_input is not None and user_input.strip() != "":
+        user_input = user_input.strip()
+
+        # 1) 立即渲染用户消息（右侧）
+        with st.chat_message("user", avatar="🧑"):
+            st.markdown(user_input)
         st.session_state["qc_history"].append(
             {"role": "user", "content": user_input}
         )
 
-        # 调 agent（内部会用 tools，不要自己动工具链）
-        try:
-            reply = agent.ask(user_input)
-        except Exception as e:
-            reply = f"Agent failed with error: {e}"
+        # 2) assistant 占位 + 同步调用 agent.ask（用户此时已经看到自己发的内容了）
+        with st.chat_message("assistant", avatar="🤖"):
+            placeholder = st.empty()
+            placeholder.markdown("_Thinking..._")
+            try:
+                reply = agent.ask(user_input)
+            except Exception as e:
+                reply = f"Agent failed with error: {e}"
+            placeholder.markdown(reply)
 
-        # 追加 agent 回复
         st.session_state["qc_history"].append(
             {"role": "assistant", "content": reply}
         )
 
-        # 立刻刷新界面显示新消息
-        if hasattr(st, "rerun"):
-            st.rerun()
-        else:
-            st.experimental_rerun()
+        # 不强制 rerun；下一轮输入时会带着完整 history 重绘
 
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
