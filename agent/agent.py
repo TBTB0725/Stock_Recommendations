@@ -172,12 +172,11 @@ TOOLS_SPEC = [
                     "prices": {"type": "object"},
                     "horizon": {
                         "type": "string",
-                        "enum": ["1D","5D","1W","2W","1M","3M","6M","1Y"],
-                        "default": "3M"
+                        "enum": ["1D","5D","1W","2W","1M","3M","6M","1Y"]
                     },
                     "tune": {"type": "boolean", "default": False},
                 },
-                "required": ["prices"],
+                "required": ["prices", "horizon"],
             },
         },
     },
@@ -343,6 +342,9 @@ Hard rules (must follow):
 2) Inputs
    - If key inputs are missing (e.g. tickers, capital, horizon, rf, weights),
      ask a SHORT follow-up question to get them.
+   - The forecast_tool only accepts horizons in {"1D","5D","1W","2W","1M","3M","6M","1Y"}.
+     If the user gives something else (e.g. "25 days"), DO NOT guess.
+     Ask the user to map it to one of these.
 
 3) Tool usage
    - Prefer calling tools whenever a numeric or data-based answer is needed.
@@ -353,9 +355,14 @@ Hard rules (must follow):
    - Never invent numbers.
    - Never output a numeric result unless it comes from a successful tool call
      in the current conversation context.
-   - If a tool fails or data is insufficient:
-       - try a minimal alternative tool chain once;
-       - otherwise briefly explain what is missing or that the computation failed.
+   - If any required tool call for the user's question fails (ok: false) or
+   inputs are inconsistent:
+       - do NOT provide numeric results or recommendations;
+       - instead, briefly explain what went wrong and ask the user for the
+         specific missing or corrected inputs.
+   - You may only aggregate, transform, or restate numbers that come from
+     successful tool calls (ok: true). If the tool you would rely on failed,
+     you must not bypass it with a "manual" computation.
 
 5) Communication style
    - Be concise, precise, and quantitative.
@@ -439,6 +446,150 @@ def _prune_kwargs(tool_name: str, args: Any) -> Any:
         return args
     return {k: v for k, v in args.items() if k in allowed}
 
+def _validate_types(tool_name: str, args: Dict[str, Any]) -> None:
+    """
+    严格类型校验：只检查“传进来的东西形状对不对”，不做任何猜测或填充。
+    不符合直接 raise ToolExecutionError，让模型自己改参数或问用户。
+    """
+    import pandas as pd
+    import numpy as np
+
+    if tool_name == "fetch_prices_tool":
+        tickers = args.get("tickers")
+        if not (isinstance(tickers, (list, tuple))
+                and len(tickers) > 0
+                and all(isinstance(t, str) for t in tickers)):
+            raise T.ToolExecutionError(
+                "fetch_prices_tool: 'tickers' must be a non-empty list of strings."
+            )
+
+    elif tool_name == "to_returns_tool":
+        px = args.get("prices")
+        if not isinstance(px, pd.DataFrame):
+            raise T.ToolExecutionError(
+                "to_returns_tool: 'prices' must be a pandas DataFrame."
+            )
+        method = args.get("method", "log")
+        if method not in ("log", "simple"):
+            raise T.ToolExecutionError(
+                "to_returns_tool: 'method' must be 'log' or 'simple'."
+            )
+
+    elif tool_name == "forecast_tool":
+        px = args.get("prices")
+        if not isinstance(px, pd.DataFrame):
+            raise T.ToolExecutionError(
+                "forecast_tool: 'prices' must be a pandas DataFrame."
+            )
+        hz = args.get("horizon")
+        if not isinstance(hz, str):
+            raise T.ToolExecutionError(
+                "forecast_tool: 'horizon' must be a string like '1M', '3M'."
+            )
+
+    elif tool_name == "risk_tool":
+        rets = args.get("returns")
+        if not isinstance(rets, pd.DataFrame):
+            raise T.ToolExecutionError(
+                "risk_tool: 'returns' must be a pandas DataFrame."
+            )
+
+    elif tool_name == "optimize_tool":
+        obj = args.get("objective")
+        if obj not in ("min_var", "max_ret", "max_sharpe"):
+            raise T.ToolExecutionError(
+                "optimize_tool: 'objective' must be one of 'min_var', 'max_ret', 'max_sharpe'."
+            )
+
+        mu = args.get("mu_annual")
+        Sigma = args.get("Sigma_annual")
+
+        if not isinstance(mu, (pd.Series, np.ndarray, list)):
+            raise T.ToolExecutionError(
+                "optimize_tool: 'mu_annual' must be a 1D vector (pandas Series / array / list)."
+            )
+        if not isinstance(Sigma, pd.DataFrame):
+            raise T.ToolExecutionError(
+                "optimize_tool: 'Sigma_annual' must be a pandas DataFrame covariance matrix."
+            )
+        # 简单方阵校验
+        if Sigma.shape[0] != Sigma.shape[1]:
+            raise T.ToolExecutionError(
+                "optimize_tool: 'Sigma_annual' must be square."
+            )
+
+    elif tool_name == "evaluate_portfolio_tool":
+        # tickers
+        tickers = args.get("tickers")
+        if not (isinstance(tickers, (list, tuple))
+                and len(tickers) > 0
+                and all(isinstance(t, str) for t in tickers)):
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'tickers' must be a non-empty list of strings."
+            )
+
+        # weights
+        weights = args.get("weights")
+        if not (isinstance(weights, (list, tuple, np.ndarray))
+                and len(weights) == len(tickers)):
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'weights' must be same-length vector as 'tickers'."
+            )
+
+        # capital
+        cap = args.get("capital")
+        if not (isinstance(cap, (int, float)) and cap > 0):
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'capital' must be a positive number."
+            )
+
+        # mu_annual
+        mu = args.get("mu_annual")
+        if not isinstance(mu, (pd.Series, list, np.ndarray)):
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'mu_annual' must be a vector (Series / list / array)."
+            )
+
+        # Sigma_annual
+        Sigma = args.get("Sigma_annual")
+        if not isinstance(Sigma, pd.DataFrame):
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'Sigma_annual' must be a pandas DataFrame."
+            )
+        if Sigma.shape[0] != Sigma.shape[1]:
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'Sigma_annual' must be square."
+            )
+
+        # returns_daily
+        rd = args.get("returns_daily")
+        if not isinstance(rd, pd.DataFrame):
+            raise T.ToolExecutionError(
+                "evaluate_portfolio_tool: 'returns_daily' must be a pandas DataFrame."
+            )
+
+    elif tool_name == "compile_report_tool":
+        res = args.get("results")
+        if not isinstance(res, (list, tuple)):
+            raise T.ToolExecutionError(
+                "compile_report_tool: 'results' must be a list of result objects."
+            )
+
+    elif tool_name == "fetch_news_tool":
+        tickers = args.get("tickers")
+        if not (isinstance(tickers, (list, tuple))
+                and len(tickers) > 0
+                and all(isinstance(t, str) for t in tickers)):
+            raise T.ToolExecutionError(
+                "fetch_news_tool: 'tickers' must be a non-empty list of strings."
+            )
+
+    elif tool_name == "sentiment_score_titles_tool":
+        # 这里不死抠类型，因为工具内部支持多种输入形式，只要 items 存在
+        if "items" not in args:
+            raise T.ToolExecutionError(
+                "sentiment_score_titles_tool: 'items' is required."
+            )
 
 # ---------------------------------
 # Make objects JSON-serializable
@@ -464,6 +615,7 @@ def _json_safe(o):
         return {str(k): _json_safe(v) for k, v in o.items()}
     # final fallback
     return str(o)
+
 
 # ----------------------------------
 # Build lightweight result preview
@@ -607,13 +759,16 @@ class ChatStockAgent:
         if missing:
             raise T.ToolExecutionError(f"{name} missing required args: {missing}.")
 
-        # 6) 真正调用工具
+        # 6) 类型校验（严格，不做猜测）
+        _validate_types(name, args)
+
+        # 7) 真正调用工具
         try:
             result = fn(**args)
         except Exception as e:
             raise
 
-        # 7) 存入对象仓库 + 提供 JSON-safe preview 给后续工具/模型参考
+        # 8) 存入对象仓库 + 提供 JSON-safe preview 给后续工具/模型参考
         ref = self.store.put(result)
         preview = _coerce_preview(result)
         return {"ok": True, "ref": ref, "preview": preview}
