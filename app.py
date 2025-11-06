@@ -85,31 +85,6 @@ def _mount_agent_mode():
 
     agent = st.session_state["qc_agent"]
 
-    # Reset 按钮
-    cols = st.columns([1, 6])
-    with cols[0]:
-        if st.button("🔁 Reset conversation"):
-            agent.reset()
-            st.session_state["qc_history"] = []
-            # 用新 API，兼容老版本
-            if hasattr(st, "rerun"):
-                st.rerun()
-            else:
-                st.experimental_rerun()
-
-    # （可选）一点 CSS，强化左右区分（Streamlit 自带 user=右，assistant=左，这里只是稍微调下宽度）
-    st.markdown(
-        """
-        <style>
-        /* 限制对话最大宽度，让布局更像聊天 */
-        [data-testid="stChatMessage"] > div {
-            max-width: 900px;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
     # 先把历史消息画出来
     for msg in st.session_state["qc_history"]:
         role = msg["role"]
