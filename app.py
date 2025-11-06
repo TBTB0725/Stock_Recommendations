@@ -137,50 +137,60 @@ if agent_mode:
     st.sidebar.markdown(
         """
 **Data & Preprocessing**
-- Fetch historical price data (US equities via supported data source).
-- Convert prices into daily returns (log or simple).
+- Fetch historical prices for selected tickers (via yfinance).
+- Convert prices to daily log returns for further analysis.
 
-**Expected Return & Risk**
-- Forecast annualized expected returns using Prophet for:
-  - 1D, 5D, 1W, 2W, 1M, 3M, 6M, 1Y horizons.
-- Compute risk metrics:
-  - Covariance matrix
-  - Volatility and correlations
+**Forecasting**
+- Use a Prophet-based model to estimate expected returns from price history.
+- Support discrete horizons: 1D, 5D, 1W, 2W, 1M, 3M, 6M, 1Y (no guessing in-between).
 
-**Portfolio Construction**
-- Build rule-based strategies:
-  - Minimum-variance portfolio (`min_var`)
-  - Maximum-return portfolio (`max_ret`)
-  - Maximum-Sharpe portfolio (`max_sharpe`)
-- Respect your constraints and inputs (tickers, capital, rf, etc.).
+**Risk Analytics**
+- Compute the covariance matrix of daily returns, with optional 252-day annualization.
+- Compute portfolio volatility using √(wᵀ Σ w).
+- Aggregate asset returns into a single portfolio return series.
+- Estimate portfolio Value-at-Risk (VaR) via historical simulation for a chosen horizon and confidence level.
 
-**Portfolio Evaluation**
-- Evaluate any given weights with:
-  - Annualized return and volatility
-  - Sharpe ratio
-  - Value-at-Risk (VaR) for chosen confidence level and horizon
+**Portfolio Optimization**
+- Construct portfolios using optimization:
+  - Minimum-variance (`min_var`)
+  - Maximum-return (`max_ret`)
+  - Maximum-Sharpe (`max_sharpe`)
+- Return clean weight vectors (percent allocation per asset) under your inputs and constraints.
+
+**Portfolio Evaluation & Reporting**
+- Evaluate any given portfolio using:
+  - Expected return (μ), volatility (σ), Sharpe ratio
+  - Historical VaR based on your daily returns and forecasts
+- Compile multiple portfolio results into:
+  - A summary table of key metrics
+  - Wide-format weights and allocation tables for inspection or export.
+
+**News & Sentiment (optional, when requested)**
+- Fetch recent headlines from FINVIZ for selected tickers.
+- Score each (ticker, headline) pair with an LLM for near-term price impact.
+- Return enriched news data you can use as an additional signal.
         """
     )
 
     st.sidebar.markdown(
         """
 **Example questions**
-- "With $100,000 and tickers AAPL, MSFT, NVDA, build a max_sharpe portfolio using the last 252 trading days and rf = 2%."
-- "I have $10,000. For the next 1M horizon, is AAPL or AMZN more attractive based on your forecasts and risk?"
-- "Compare TSLA and NVDA over the last year: expected return, volatility, and Sharpe."
-- "Here are my weights for AAPL, MSFT, AMZN. Please evaluate μ, σ, Sharpe, and 1D 95% VaR."
+- "With $100,000 and tickers AAPL, MSFT, NVDA, build and evaluate a max_sharpe portfolio using the last 252 trading days and rf = 2%."
+- "For the next 1M, based on your forecasts and risk metrics, is AAPL or AMZN more attractive?"
+- "Here are my weights for AAPL, MSFT, AMZN — please compute μ, σ, Sharpe, and 1D 95% VaR."
+- "Fetch recent news for TSLA and score the short-term impact of each headline."
         """
     )
 
     st.sidebar.markdown(
         """
 **Limitations**
-- Answers are strictly based on the available tools and market data.
-- No price guessing, no macro predictions beyond what tools compute.
-- No advice on health, relationships, generic coding, or non-quant topics.
+- Uses only the tools above: price/returns, Prophet forecasts, covariance & VaR, optimization, evaluation, and optional news/sentiment.
+- No invented inputs or numbers; if required data is missing or invalid, the agent will ask you.
+- No advice on non-quantitative topics (health, generic life coaching, unrelated coding, etc.).
         """
     )
-
+    
     # Render chat UI only
     _mount_agent_mode()
     st.stop()
