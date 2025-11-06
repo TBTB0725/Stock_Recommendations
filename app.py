@@ -25,7 +25,7 @@ from optimize import (
 from report import evaluate_portfolio, compile_report
 from news import fetch_finviz_headlines
 from sentiment import score_titles, DEFAULT_MODEL as SENTI_DEFAULT_MODEL
-from agent.agent import StockAgent
+from agent.agent import ChatStockAgent
 
 _H = {"1D":1,"5D":5,"1W":5,"2W":10,"1M":21,"3M":63,"6M":126,"1Y":252}
 _H_HUMAN = {"1D":"1 Day","5D":"5 Days","1W":"1 Week","2W":"2 Weeks","1M":"1 Month"}
@@ -55,111 +55,71 @@ st.caption("Interactively set parameters, compute Equal-Weight / Min-Variance / 
 
 # =============== Agent Mode ===============
 def _mount_agent_mode():
-    st.header("🤖 Agent Mode")
+    st.header("🤖 Agent Mode — QuantChat")
 
+    # 1) 设置 OpenAI Key（优先 secrets，再读环境变量）
     key = _get_openai_key()
     if key:
         os.environ["OPENAI_API_KEY"] = key
 
-    default_tickers_str = "AAPL, MSFT, AMZN, NVDA, GOOGL, TSLA, JPM, XOM, PFE, BHVN"
-    tickers_str_agent = st.text_input("Tickers (comma-separated)", value=default_tickers_str)
-    tickers = [t.strip().upper() for t in tickers_str_agent.split(",") if t.strip()]
-
-    left, right = st.columns(2)
-    with left:
-        horizon = st.selectbox("Forecast horizon", ["1W","1M","3M","6M"], index=1)
-        capital = st.number_input("Total Capital (USD)", min_value=0.0, step=1000.0, value=100000.0)
-    with right:
-        rf = st.number_input("Risk-free rate (annual)", min_value=0.0, step=0.001, value=0.042, format="%.3f")
-        lookback_days = st.number_input("Price lookback (trading days)", min_value=60, max_value=1260, step=21, value=504)
-
-    include_sent = st.checkbox("Include news sentiment (optional)", value=False)
-    if include_sent:
-        news_col1, news_col2 = st.columns(2)
-        with news_col1:
-            per_ticker_count = st.slider("Headlines per ticker (raw)", 1, 50, 6)
-        with news_col2:
-            senti_cap = st.slider("Sentiment scoring cap (total)", 2, 50, 12)
-    else:
-        per_ticker_count, senti_cap = 0, 0
-
-    # === 新增：用户自定义 Prompt 开关 ===
-    custom_prompt_on = st.checkbox("✍️ Enable custom instruction prompt", value=False)
-    if custom_prompt_on:
-        # 给一个可编辑模板（用户可完全改写）
-        default_instruction = (
-            "Analyze AAPL and NVDA for next 1M. "
-            "Do NOT include sentiment unless I asked. "
-            "Optimize max_sharpe and evaluate with $100000 capital and rf=0.042. "
-            "Use about 504 trading days of history."
+    # 2) 初始化全局的聊天 Agent + 前端对话历史（只初始化一次）
+    if "quant_agent" not in st.session_state:
+        st.session_state["quant_agent"] = ChatStockAgent(
+            model="gpt-4.1-mini",
+            verbose=True,   # 你如果不想后端打 log，可以改成 False
         )
-        instruction = st.text_area("Instruction to Agent", value=default_instruction, height=140)
-    else:
-        # 仍按控件生成（不启用情绪时不写 include sentiment）
-        instruction = (
-            f"Analyze {', '.join(tickers)} for next {horizon}, optimize max_sharpe, "
-            f"then evaluate with ${int(capital)} capital and rf={rf}. "
-            f"Use about {int(lookback_days)} trading days of history."
+        st.session_state["chat_messages"] = []
+
+    agent = st.session_state["quant_agent"]
+
+    # 3) 提供一个重置会话按钮（清空 agent 内部 memory + UI 历史）
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 Reset conversation", use_container_width=True):
+            agent.reset()
+            st.session_state["chat_messages"] = []
+            st.experimental_rerun()
+    with col2:
+        st.caption(
+            "Ask quantitative questions I can compute with my tools: "
+            "prices, returns, covariance, optimization, VaR, Sharpe, forecasts, news sentiment."
         )
-        if include_sent:
-            instruction += f" Include sentiment; for news roughly {int(per_ticker_count)} per ticker (cap total to {int(senti_cap)})."
 
-    st.caption("Instruction that will be sent:")
-    st.code(instruction, language="markdown")
+    st.divider()
 
-    if st.button("▶️ Run Agent", use_container_width=True):
-        # 传入自定义 system prompt（如未启用则为 None）
-        agent = StockAgent(model="gpt-4.1-mini", verbose=False)
-        out = agent.run(instruction)
+    # 4) 回放历史消息
+    for msg in st.session_state["chat_messages"]:
+        role = msg["role"]
+        content = msg["content"]
+        # 映射到 Streamlit chat roles（user / assistant）
+        if role not in ("user", "assistant"):
+            role = "assistant"
+        with st.chat_message(role):
+            st.markdown(content)
 
-        st.subheader("🧠 Plan (LLM JSON)")
-        st.json(out["plan"], expanded=False)
+    # 5) 底部输入框：像 ChatGPT 一样聊天
+    prompt = st.chat_input("Type your quant question here (e.g. VaR, Sharpe, optimize weights)...")
 
-        plan = out["plan"]; ctx = out["results"]
-        eval_names = [c["name"] for c in plan.get("calls", []) if c.get("tool") == "evaluate_portfolio_tool"]
-        pr = None
-        for nm in reversed(eval_names):
-            if nm in ctx:
-                pr = ctx[nm]
-                break
+    if prompt:
+        # 显示 + 记录用户消息
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state["chat_messages"].append(
+            {"role": "user", "content": prompt}
+        )
 
-        if pr is None:
-            st.warning("No evaluation result found in the plan execution.")
-            return
+        # 调用你的严格版 ChatStockAgent（内部会走 tools, 校验等）
+        try:
+            reply = agent.ask(prompt)
+        except Exception as e:
+            reply = f"Error during computation: {e}"
 
-        name = getattr(pr, "name", "Portfolio")
-        weights: pd.Series = getattr(pr, "weights", None)
-        mu = getattr(pr, "exp_return_annual", None)
-        sigma = getattr(pr, "volatility_annual", None)
-        sharpe = getattr(pr, "sharpe", None)
-        var_alpha = getattr(pr, "var_alpha", None)
-        var_value = getattr(pr, "var_value", None)
-        var_h = getattr(pr, "var_horizon_days", None)
-
-        st.markdown(f"### 📦 {name}")
-        if isinstance(weights, pd.Series):
-            df_w = weights.to_frame("Weight").sort_values("Weight", ascending=False)
-            st.dataframe(df_w.style.format({"Weight": "{:.2%}"}), use_container_width=True)
-
-            import altair as alt
-            ch_w = (
-                alt.Chart(df_w.reset_index().rename(columns={"index":"Ticker"}))
-                .mark_bar()
-                .encode(
-                    x=alt.X("Ticker:N", sort=None),
-                    y=alt.Y("Weight:Q", axis=alt.Axis(format="%")),
-                    tooltip=["Ticker", alt.Tooltip("Weight:Q", format=".2%")],
-                )
-            )
-            st.altair_chart(ch_w, use_container_width=True)
-
-        cols = st.columns(4)
-        if mu is not None: cols[0].metric("Annualized μ", f"{mu:.2%}")
-        if sigma is not None: cols[1].metric("Annualized σ", f"{sigma:.2%}")
-        if sharpe is not None: cols[2].metric("Sharpe", f"{sharpe:.2f}")
-        if var_value is not None and var_alpha is not None and var_h is not None:
-            conf = int((1 - var_alpha) * 100)
-            cols[3].metric(f"VaR {conf}% / {var_h}d", f"{var_value:.2%}")
+        # 显示 + 记录助手回复
+        with st.chat_message("assistant"):
+            st.markdown(reply)
+        st.session_state["chat_messages"].append(
+            {"role": "assistant", "content": reply}
+        )
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
 agent_mode = st.sidebar.toggle("🤖 Agent mode", value=False, help="开启后仅显示智能体面板，不影响原有功能")
