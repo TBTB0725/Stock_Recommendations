@@ -81,40 +81,48 @@ def _mount_agent_mode():
         st.markdown(
             """
             <style>
-            .chat-container {
-                margin: 0.25rem 0;
+            .qc-chat-row {
+                display: flex;
+                margin: 0.4rem 0;
             }
-            .chat-label {
-                font-size: 0.72rem;
-                color: #6b7280;
-                margin-bottom: 0.12rem;
+            .qc-chat-row.left {
+                justify-content: flex-start;
             }
-            .chat-bubble {
-                display: inline-block;
-                padding: 0.55rem 0.8rem;
-                border-radius: 0.8rem;
-                max-width: 100%;
+            .qc-chat-row.right {
+                justify-content: flex-end;
+            }
+            .qc-bubble {
+                max-width: 72%;
+                padding: 0.6rem 0.9rem;
+                border-radius: 1rem;
+                box-shadow: 0 2px 6px rgba(15,23,42,0.10);
                 font-size: 0.95rem;
                 line-height: 1.5;
                 word-wrap: break-word;
-                box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+                word-break: break-word;
             }
-            .chat-bubble.assistant {
-                background-color: #f5f5f7;
+            .qc-bubble.assistant {
+                background-color: #f3f4f6;
                 color: #111827;
-                border-top-left-radius: 0.25rem;
+                border-top-left-radius: 0.3rem;
             }
-            .chat-bubble.user {
-                background-color: #2563eb10;
-                border: 1px solid #2563eb40;
-                color: #111827;
-                border-top-right-radius: 0.25rem;
+            .qc-bubble.user {
+                background-color: #2563eb;
+                color: #ffffff;
+                border-top-right-radius: 0.3rem;
+            }
+            .qc-label {
+                font-size: 0.70rem;
+                font-weight: 600;
+                opacity: 0.8;
+                margin-bottom: 0.12rem;
             }
             </style>
             """,
             unsafe_allow_html=True,
         )
         st.session_state["qc_chat_css"] = True
+
 
     # ---- 初始化会话态 ----
     if "qc_agent" not in st.session_state:
@@ -145,34 +153,35 @@ def _mount_agent_mode():
 
     # ---- 渲染单条消息（你在右，机器人在左，加气泡）----
     def render_msg(role: str, content: str):
-        safe = html.escape(content)
+        # 文本转义 + 保留换行
+        safe = html.escape(content).replace("\n", "<br>")
 
         if role == "assistant":
             # 机器人在左
-            left, right = st.columns([7, 3])
-            with left:
-                st.markdown(
-                    f"""
-                    <div class="chat-container">
-                        <div class="chat-label">QuantChat</div>
-                        <div class="chat-bubble assistant">{safe}</div>
+            st.markdown(
+                f"""
+                <div class="qc-chat-row left">
+                    <div class="qc-bubble assistant">
+                        <div class="qc-label">QuantChat</div>
+                        <div>{safe}</div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
         else:
             # 你在右
-            left, right = st.columns([3, 7])
-            with right:
-                st.markdown(
-                    f"""
-                    <div class="chat-container" style="text-align: right;">
-                        <div class="chat-label">You</div>
-                        <div class="chat-bubble user">{safe}</div>
+            st.markdown(
+                f"""
+                <div class="qc-chat-row right">
+                    <div class="qc-bubble user">
+                        <div class="qc-label">You</div>
+                        <div>{safe}</div>
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     # ---- 先渲染历史，让“我说的话”总是立刻可见 ----
     for msg in history:
