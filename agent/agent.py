@@ -29,9 +29,9 @@ ALLOWED_HORIZONS = {"1D", "5D", "1W", "2W", "1M", "3M", "6M", "1Y"}
 REQUIRED_KW = {
     "fetch_prices_tool": {"tickers"},
     "to_returns_tool": {"prices"},
-    "forecast_tool": {"prices"},
+    "forecast_tool": {"prices", "horizon"},
     "risk_tool": {"returns"},
-    "optimize_tool": {"objective"},
+    "optimize_tool": {"objective", "mu_annual", "Sigma_annual"},
     "evaluate_portfolio_tool": {
         "name", "tickers", "weights", "capital",
         "mu_annual", "Sigma_annual", "returns_daily",
@@ -397,9 +397,10 @@ class ObjectStore:
 # ---------------------------------
 def _normalize_args(tool_name: str, raw_args: Any) -> Any:
     """
-    - 裸 {'__ref__': ...} → 包到主参数里（如 {'prices': {'__ref__': ...}}）
-    - 若缺主参数但出现别名键（df/px/data/ret 等），自动映射为主参数
-    - 若仍缺主参数且只有一个键，且值是 {'__ref__': ...} 或 pandas 对象，也自动映射
+    参数规范化（严格模式）：
+      - 如果是裸 {"__ref__": "..."}，包装到该工具的主参数下：
+        例如 to_returns_tool -> {"prices": {"__ref__": "..."}}
+      - 如果缺主参数且只有一个键，且值是 {"__ref__": "..."}，也做同样包装。
     """
     if not isinstance(raw_args, dict):
         return raw_args
@@ -408,31 +409,24 @@ def _normalize_args(tool_name: str, raw_args: Any) -> Any:
     if expected is None:
         return raw_args
 
-    # 裸 __ref__
+    # 裸 __ref__：直接映射到主参数
     if set(raw_args.keys()) == {"__ref__"}:
         return {expected: raw_args}
 
     args = dict(raw_args)
 
-    # 别名 → 主参数
+    # 别名 → 主参数（这是显式名字，不是猜数据类型，可以保留）
     if expected not in args:
         for alias in list(args.keys()):
             if alias in aliases:
                 args[expected] = args.pop(alias)
                 break
 
-    # 单键自动映射
+    # 单键 + __ref__ → 主参数
     if expected not in args and len(args) == 1:
-        k, v = next(iter(args.items()))
+        _, v = next(iter(args.items()))
         if isinstance(v, dict) and set(v.keys()) == {"__ref__"}:
             args = {expected: v}
-        else:
-            try:
-                import pandas as pd
-                if isinstance(v, (pd.DataFrame, pd.Series)):
-                    args = {expected: v}
-            except Exception:
-                pass
 
     return args
 
@@ -512,12 +506,12 @@ def _coerce_preview(x: Any) -> Any:
 
     return str(type(x))
 
-# ----------------------------
-# 对话式 Agent（函数调用循环）
-# ----------------------------
+# ---------------------
+# Dialogue Agent
+# ---------------------
 class ChatStockAgent:
     def __init__(self, model: str = "gpt-4.1-mini", verbose: bool = True, system_prompt: Optional[str] = None):
-        self.client = OpenAI()  # 依赖 OPENAI_API_KEY/OPENAI
+        self.client = OpenAI()
         self.model = model
         self.verbose = verbose
         self.system_prompt = system_prompt or SCOPE_GUARD_PROMPT
@@ -530,9 +524,12 @@ class ChatStockAgent:
     def _log(self, msg: str):
         if self.verbose: logger.info(msg)
     
-    # 在 ChatStockAgent 类里新增（和其他帮助函数平级）
     def _sanitize_forecast_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        hz = str(args.get("horizon", "3M")).upper().strip()
+        if "horizon" not in args:
+            raise T.ToolExecutionError(
+                "forecast_tool missing required arg: ['horizon']."
+            )
+        hz = str(args["horizon"]).upper().strip()
 
         aliases = {
             "1DAY": "1D",
@@ -550,255 +547,76 @@ class ChatStockAgent:
 
         hz = aliases.get(hz, hz)
         if hz not in ALLOWED_HORIZONS:
-            hz = "3M"  # 安全默认
+            raise T.ToolExecutionError(
+                f"Invalid forecast horizon '{hz}'. "
+                f"Allowed horizons: {sorted(ALLOWED_HORIZONS)}"
+            )
 
         args["horizon"] = hz
         return args
-
-    def _complete_eval_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        针对 evaluate_portfolio_tool 自动补齐缺失参数：
-        - returns_daily：若缺，从对象仓库中找最后一个 DataFrame
-        - tickers：来自 returns_daily.columns
-        - mu_annual：returns_daily.mean() * 252
-        - Sigma_annual：returns_daily.cov() * 252
-        - weights：等权（与 tickers 对齐）
-        - name：默认 'Auto (EW)'
-        - capital：若缺，默认 100000.0
-        """
-        import pandas as pd
-        import numpy as np
-
-        # 找 returns_daily
-        rets = args.get("returns_daily")
-        if rets is None:
-            for rid in reversed(list(self.store._store.keys())):
-                obj = self.store._store[rid]
-                if isinstance(obj, pd.DataFrame):
-                    rets = obj
-                    break
-            if rets is not None:
-                args["returns_daily"] = rets
-        if rets is None:
-            raise RuntimeError("evaluate_portfolio_tool requires 'returns_daily' DataFrame; none available.")
-
-        # tickers
-        if not args.get("tickers"):
-            args["tickers"] = list(rets.columns)
-
-        # mu_annual
-        if args.get("mu_annual") is None:
-            args["mu_annual"] = rets.mean() * 252
-
-        # Sigma_annual
-        if args.get("Sigma_annual") is None:
-            args["Sigma_annual"] = rets.cov() * 252
-
-        # weights
-        if args.get("weights") is None:
-            n = len(args["tickers"])
-            args["weights"] = np.full(n, 1.0 / max(n, 1), dtype=float)
-
-        # name
-        if not args.get("name"):
-            args["name"] = "Auto (EW)"
-
-        # capital
-        if not isinstance(args.get("capital"), (int, float)) or args["capital"] <= 0:
-            args["capital"] = 100000.0
-
-        return args
-
+    
     def _parse_rf(self, x) -> float:
-        """把 rf 统一成 float（支持 '2%', '0.02', 0.02 等；异常时回退 0.0）。"""
-        try:
-            if isinstance(x, str):
-                s = x.strip()
-                if s.endswith("%"):
-                    return float(s[:-1].strip()) / 100.0
+        """严格解析 rf；无效输入直接报错，不回退 0."""
+        if isinstance(x, str):
+            s = x.strip()
+            if s.endswith("%"):
+                s = s[:-1].strip()
+                try:
+                    return float(s) / 100.0
+                except Exception:
+                    raise T.ToolExecutionError(
+                        f"Invalid rf value '{x}'. Expect like 2% or 0.02."
+                    )
+            try:
                 return float(s)
+            except Exception:
+                raise T.ToolExecutionError(
+                    f"Invalid rf value '{x}'. Expect like 2% or 0.02."
+                )
+
+        try:
             return float(x)
         except Exception:
-            return 0.0
-
-
-    def _complete_opt_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        针对 optimize_tool 自动补齐：
-        - rf：解析百分号等文本为 float
-        - mu_annual / Sigma_annual：若缺则从对象仓库抓；再不行就用 returns 现算（252 年化）
-        - 对齐 index/columns，确保 μ 的 index ⊆ Σ 的 columns 且同序
-        """
-        import pandas as pd
-        import numpy as np
-
-        # 1) rf 解析
-        args["rf"] = self._parse_rf(args.get("rf", 0.0))
-
-        mu = args.get("mu_annual")
-        Sigma = args.get("Sigma_annual")
-
-        # 2) 若缺 μ/Σ：从仓库找最近的 Series(DataFrame) / 方阵 DataFrame
-        def _looks_square(df: pd.DataFrame) -> bool:
-            return isinstance(df, pd.DataFrame) and df.shape[0] == df.shape[1] and list(df.columns) == list(df.index)
-
-        def _find_latest_series() -> Optional[pd.Series]:
-            for rid in reversed(list(self.store._store.keys())):
-                obj = self.store._store[rid]
-                if isinstance(obj, pd.Series):
-                    return obj
-            return None
-
-        def _find_latest_square_df() -> Optional[pd.DataFrame]:
-            for rid in reversed(list(self.store._store.keys())):
-                obj = self.store._store[rid]
-                if _looks_square(obj):
-                    return obj
-            return None
-
-        if mu is None:
-            mu = _find_latest_series()
-        if Sigma is None:
-            Sigma = _find_latest_square_df()
-
-        # 3) 仍缺的话：用“最近的 returns DataFrame”现算 μ/Σ
-        if mu is None or Sigma is None:
-            rets = None
-            for rid in reversed(list(self.store._store.keys())):
-                obj = self.store._store[rid]
-                if isinstance(obj, pd.DataFrame) and not _looks_square(obj):
-                    # 有时间索引/非方阵 → 更像 returns；价格 / returns 都非方阵，这里不做过细区分
-                    rets = obj
-                    break
-            if rets is None:
-                # 没法补
-                return args
-
-            if mu is None:
-                mu = rets.mean() * 252
-            if Sigma is None:
-                Sigma = rets.cov() * 252
-
-        # 4) μ/Σ 类型清洗：μ 必须是 Series；如果 μ 是 1 列 DF → 转 Series
-        if isinstance(mu, pd.DataFrame):
-            if mu.shape[1] == 1:
-                mu = mu.iloc[:, 0]
-            else:
-                # 多列时取第一列（保守）
-                mu = mu.iloc[:, 0]
-
-        # 5) 对齐 μ 与 Σ（交集 + 排序一致）
-        common = [t for t in mu.index if t in Sigma.columns]
-        if not common:
-            # 无交集，给优化器留给它自己报错
-            args["mu_annual"] = mu
-            args["Sigma_annual"] = Sigma
-            return args
-
-        mu = mu.loc[common]
-        Sigma = Sigma.loc[common, common]
-
-        # 6) 写回
-        args["mu_annual"] = mu
-        args["Sigma_annual"] = Sigma
-        return args
-
-
-    def _autofill_primary_arg(self, tool_name: str, args: Any, store: "ObjectStore") -> Any:
-        """
-        根据目标工具需要，优先从对象仓库里挑“最像”的对象自动补主参数：
-        - to_returns_tool / forecast_tool:   选“像价格”的 DataFrame（DatetimeIndex，非方阵，值量纲明显>0.5）
-        - risk_tool:                         选“像收益”的 DataFrame（DatetimeIndex，非方阵，值量纲<0.5 的小数）
-        若找不到，就保持原样（交给后续校验/报错）。
-        """
-        if not isinstance(args, dict):
-            return args
-
-        expected, _ = PRIMARY_PARAM.get(tool_name, (None, set()))
-        if expected is None or expected in args:
-            return args
-
-        import pandas as pd
-        import numpy as np
-
-        def _has_dt_idx(df: pd.DataFrame) -> bool:
-            return isinstance(df.index, (pd.DatetimeIndex, pd.PeriodIndex))
-
-        def _is_square(df: pd.DataFrame) -> bool:
-            return df.shape[0] == df.shape[1] and list(df.columns) == list(df.index)
-
-        def _median_abs(df: pd.DataFrame) -> float:
-            with np.errstate(all='ignore'):
-                return float(np.nanmedian(np.abs(df.values)))
-
-        def _looks_like_prices(df: pd.DataFrame) -> bool:
-            # 时间索引 + 非方阵 + 价格量级（>0.5，大多数股价满足；便士股极端情况不影响你这几个大盘股）
-            return _has_dt_idx(df) and not _is_square(df) and _median_abs(df) > 0.5
-
-        def _looks_like_returns(df: pd.DataFrame) -> bool:
-            # 时间索引 + 非方阵 + 小数量级（<0.5）
-            return _has_dt_idx(df) and not _is_square(df) and _median_abs(df) < 0.5
-
-        # 逆序遍历仓库（最近的在前），挑最合适的
-        if tool_name in {"to_returns_tool", "forecast_tool"}:
-            for rid in reversed(list(store._store.keys())):
-                obj = store._store[rid]
-                if isinstance(obj, pd.DataFrame) and _looks_like_prices(obj):
-                    args[expected] = obj
-                    break
-
-        elif tool_name == "risk_tool":
-            for rid in reversed(list(store._store.keys())):
-                obj = store._store[rid]
-                if isinstance(obj, pd.DataFrame) and _looks_like_returns(obj):
-                    args[expected] = obj
-                    break
-
-        return args
-
+            raise T.ToolExecutionError(
+                f"Invalid rf value '{x}'. Expect numeric, e.g. 0.02."
+            )
 
     def _run_tool(self, name: str, raw_args: Dict[str, Any]) -> Dict[str, Any]:
         fn = TOOL_FUNCS[name]
 
-        # 1) 归一化
+        # 1) 归一化当前调用参数（只用调用里给的东西，不看历史）
         fixed_args = _normalize_args(name, raw_args)
-        # 2) 解引用
+
+        # 2) 解析 {"__ref__": "..."} 为真实对象
         args = self.store.resolve_refs(fixed_args)
-        # 3) 自动补主参数
-        args = self._autofill_primary_arg(name, args, self.store)
-        # 3.5) 特定工具的进一步补齐/清洗
-        if name == "evaluate_portfolio_tool":
-            args = self._complete_eval_args(args)
-        elif name == "optimize_tool":
-            args = self._complete_opt_args(args)
-        elif name == "forecast_tool":
-            args = self._sanitize_forecast_args(args)   # ← 加这一行
-        # 4) 清理未声明参数（已有的 _prune_kwargs）
+
+        # 3) 特定工具的小范围参数清洗（不引入新数据）
+        if name == "forecast_tool":
+            args = self._sanitize_forecast_args(args)
+        if name == "optimize_tool":
+            # 只把 rf 从 "2%" 这类格式转成数值，不自动造 mu/Sigma
+            if "rf" in args:
+                args["rf"] = self._parse_rf(args["rf"])
+
+        # 4) 删除未在 ALLOWED_KW 声明的多余参数，避免脏键
         args = _prune_kwargs(name, args)
 
-        # 4.1) 强制必填项
+        # 5) 检查必填参数是否都在（严格模式）
         must = REQUIRED_KW.get(name, set())
         missing = [k for k in must if k not in args]
         if missing:
             raise T.ToolExecutionError(f"{name} missing required args: {missing}.")
-        # 5) 真正调用（to_returns 的 simple 回退保留）
+
+        # 6) 真正调用工具
         try:
             result = fn(**args)
         except Exception as e:
-            if name == "to_returns_tool" and "non positive" in str(e).lower():
-                args = dict(args); args.setdefault("method", "simple")
-                result = fn(**args)
-            elif name == "forecast_tool":
-                # 额外兜底：万一还有奇怪 horizon，强制退回 3M 再试一次
-                args = dict(args); args["horizon"] = "3M"
-                result = fn(**args)
-            else:
-                raise
+            raise
 
+        # 7) 存入对象仓库 + 提供 JSON-safe preview 给后续工具/模型参考
         ref = self.store.put(result)
         preview = _coerce_preview(result)
         return {"ok": True, "ref": ref, "preview": preview}
-
 
 
     def ask(self, user_text: str) -> str:
