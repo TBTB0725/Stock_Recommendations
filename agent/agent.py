@@ -1,38 +1,445 @@
 # agent/agent.py
 from __future__ import annotations
-
-import json
-import logging
-import time
-from dataclasses import asdict, is_dataclass
+import json, logging, time, uuid
 from typing import Any, Dict, List, Optional
-
 import numpy as np
 import pandas as pd
-import re
+from dataclasses import asdict, is_dataclass
 from openai import OpenAI
+from datetime import datetime, date
 
-# === 你在第二步里实现的工具库 ===
 from agent import tools as T
 
-# ------------------------
-# 日志配置
-# ------------------------
-logger = logging.getLogger("agent.brain")
+# -----------------------------
+# Logger
+# -----------------------------
+logger = logging.getLogger("agent.chat")
 if not logger.handlers:
     _h = logging.StreamHandler()
     _fmt = logging.Formatter("[%(asctime)s][%(levelname)s] %(message)s", "%H:%M:%S")
-    _h.setFormatter(_fmt)
-    logger.addHandler(_h)
+    _h.setFormatter(_fmt); logger.addHandler(_h)
 logger.setLevel(logging.INFO)
 
-# ------------------------
-# LLM 配置
-# ------------------------
-DEFAULT_MODEL = "gpt-4.1-mini"
 
-# 可被调用的工具注册表（给执行器用）
-AVAILABLE_TOOLS: Dict[str, Any] = {
+# -------------------------------
+# Constants & Verification Rules
+# -------------------------------
+ALLOWED_HORIZONS = {"1D", "5D", "1W", "2W", "1M", "3M", "6M", "1Y"}
+
+REQUIRED_KW = {
+    "fetch_prices_tool": {"tickers"},
+    "to_returns_tool": {"prices"},
+    "forecast_tool": {"prices"},
+    "risk_tool": {"returns"},
+    "optimize_tool": {"objective"},
+    "evaluate_portfolio_tool": {
+        "name", "tickers", "weights", "capital",
+        "mu_annual", "Sigma_annual", "returns_daily",
+    },
+    "compile_report_tool": {"results"},
+    "fetch_news_tool": {"tickers"},
+    "sentiment_score_titles_tool": {"items"},
+}
+
+PRIMARY_PARAM = {
+    "fetch_prices_tool": (
+        "tickers",
+        {"tickers", "ticker", "symbols", "symbol", "assets", "universe", "list"},
+    ),
+    "to_returns_tool": (
+        "prices",
+        {"price", "prices", "px", "df", "data", "frame", "table"},
+    ),
+    "forecast_tool": (
+        "prices",
+        {"price", "prices", "px", "df", "data", "frame"},
+    ),
+    "risk_tool": (
+        "returns",
+        {"ret", "rets", "returns", "returns_df", "df", "data"},
+    ),
+    "optimize_tool": (
+        "objective",
+        {"objective", "obj", "mode", "target"},
+    ),
+
+    "evaluate_portfolio_tool": (
+        "weights",
+        {"weights", "w", "portfolio", "vector"},
+    ),
+    "compile_report_tool": (
+        "results",
+        {"results", "items", "list", "objs", "arr"},
+    ),
+    "fetch_news_tool": (
+        "tickers",
+        {"tickers", "ticker", "symbols", "symbol", "universe", "list"},
+    ),
+    "sentiment_score_titles_tool": (
+        "items",
+        {"items", "titles", "news", "rows", "df", "data", "list"},
+    ),
+}
+
+
+ALLOWED_KW = {
+    "fetch_prices_tool": {
+        "tickers", "lookback_days", "end",
+        "pad_ratio", "auto_business_align", "use_adjusted_close",
+    },
+    "to_returns_tool": {
+        "prices", "method", "dropna",
+    },
+    "forecast_tool": {
+        "prices", "horizon", "tune",
+        "cv_metric", "cv_initial_days", "cv_period_days",
+        "param_grid", "min_points_for_cv",
+    },
+    "risk_tool": {
+        "returns", "annualize", "trading_days_per_year",
+    },
+    "optimize_tool": {
+        "objective",
+        "mu_annual", "Sigma_annual",
+        "rf", "cons",
+        "eps", "restarts", "seed",
+    },
+    "evaluate_portfolio_tool": {
+        "name", "tickers", "weights", "capital",
+        "mu_annual", "Sigma_annual", "returns_daily",
+        "rf_annual", "var_alpha", "var_horizon_days", "log_returns",
+    },
+    "compile_report_tool": {
+        "results",
+    },
+    "fetch_news_tool": {
+        "tickers", "lookback_days",
+        "per_ticker_count", "final_cap", "sleep_s",
+    },
+    "sentiment_score_titles_tool": {
+        "items", "model_name", "api_key",
+        "default_ticker", "limit",
+    },
+}
+
+# ----------------------------
+# Memory object repository
+# ----------------------------
+class ObjectStore:
+    def __init__(self):
+        self._store: Dict[str, Any] = {}
+
+    def put(self, obj: Any) -> str:
+        rid = f"obj_{uuid.uuid4().hex[:8]}"
+        self._store[rid] = obj
+        return rid
+    
+    def get(self, rid: str) -> Any:
+        if rid not in self._store:
+            raise KeyError(f"Object ref not found: {rid}")
+        return self._store[rid]
+    
+    def resolve_refs(self, args: Any) -> Any:
+        if isinstance(args, dict):
+            if set(args.keys()) == {"__ref__"}:
+                return self.get(args["__ref__"])
+            return {k: self.resolve_refs(v) for k, v in args.items()}
+        if isinstance(args, list):
+            return [self.resolve_refs(v) for v in args]
+        return args
+    
+    
+# ---------------------------------
+# Ensure the correctness of param
+# ---------------------------------
+def _normalize_args(tool_name: str, raw_args: Any) -> Any:
+    """
+    - 裸 {'__ref__': ...} → 包到主参数里（如 {'prices': {'__ref__': ...}}）
+    - 若缺主参数但出现别名键（df/px/data/ret 等），自动映射为主参数
+    - 若仍缺主参数且只有一个键，且值是 {'__ref__': ...} 或 pandas 对象，也自动映射
+    """
+    if not isinstance(raw_args, dict):
+        return raw_args
+
+    expected, aliases = PRIMARY_PARAM.get(tool_name, (None, set()))
+    if expected is None:
+        return raw_args
+
+    # 裸 __ref__
+    if set(raw_args.keys()) == {"__ref__"}:
+        return {expected: raw_args}
+
+    args = dict(raw_args)
+
+    # 别名 → 主参数
+    if expected not in args:
+        for alias in list(args.keys()):
+            if alias in aliases:
+                args[expected] = args.pop(alias)
+                break
+
+    # 单键自动映射
+    if expected not in args and len(args) == 1:
+        k, v = next(iter(args.items()))
+        if isinstance(v, dict) and set(v.keys()) == {"__ref__"}:
+            args = {expected: v}
+        else:
+            try:
+                import pandas as pd
+                if isinstance(v, (pd.DataFrame, pd.Series)):
+                    args = {expected: v}
+            except Exception:
+                pass
+
+    return args
+
+def _prune_kwargs(tool_name: str, args: Any) -> Any:
+    """删除工具不认识的键（如遗留的 '__ref__'），避免意外 kwargs 抛错。"""
+    if not isinstance(args, dict):
+        return args
+    allowed = ALLOWED_KW.get(tool_name)
+    if not allowed:
+        return args
+    return {k: v for k, v in args.items() if k in allowed}
+
+
+# ---------------------------------
+# Make objects JSON-serializable
+# ---------------------------------
+def _json_safe(o):
+    """Convert common non-JSON-serializable objects to JSON-safe structures."""
+    if o is None or isinstance(o, (str, int, float, bool)):
+        return o
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
+    if isinstance(o, (pd.Timestamp, datetime, date, np.datetime64)):
+        try:
+            return pd.Timestamp(o).isoformat()
+        except Exception:
+            return str(o)
+    if isinstance(o, (list, tuple, set)):
+        return [_json_safe(x) for x in o]
+    if isinstance(o, dict):
+        return {str(k): _json_safe(v) for k, v in o.items()}
+    # final fallback
+    return str(o)
+
+# ----------------------------------
+# Build lightweight result preview
+# ----------------------------------
+def _coerce_preview(x: Any) -> Any:
+
+    if x is None or isinstance(x, (str, int, float, bool)):
+        return x
+
+    if isinstance(x, (pd.Timestamp, datetime, date, np.datetime64)):
+        return _json_safe(x)
+
+    if isinstance(x, np.ndarray):
+        return {"__ndarray__": True, "shape": list(x.shape), "preview": _json_safe(x[:10].tolist())}
+
+    if isinstance(x, pd.Series):
+        return {
+            "__series__": True,
+            "index_preview": _json_safe(x.index[:10].tolist()),
+            "values_preview": _json_safe(x.iloc[:10].tolist()),
+        }
+
+    if isinstance(x, pd.DataFrame):
+        head_split = x.head(5).to_dict(orient="split")
+        return {
+            "__dataframe__": True,
+            "shape": [int(x.shape[0]), int(x.shape[1])],
+            "columns": _json_safe(x.columns.tolist()[:20]),
+            "head": _json_safe(head_split),
+        }
+
+    if is_dataclass(x):
+        fields = {k: _coerce_preview(v) for k, v in asdict(x).items()}
+        return {"__dataclass__": True, "fields": fields}
+
+    if isinstance(x, (list, tuple)):
+        return [_coerce_preview(v) for v in x]
+    if isinstance(x, dict):
+        return {k: _coerce_preview(v) for k, v in x.items()}
+
+    return str(type(x))
+
+# ----------------------------
+# 工具注册（给 OpenAI function calling）
+# ----------------------------
+# 定义“函数”参数模式（JSON Schema）。只列关键参数；其余用默认值。
+TOOLS_SPEC = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_prices_tool",
+            "description": "Fetch historical prices.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "lookback_days": {"type": "integer", "default": 252},
+                    "end": {"type": ["string", "null"]},
+                    "pad_ratio": {"type": "number", "default": 2.0},
+                    "auto_business_align": {"type": "boolean", "default": True},
+                    "use_adjusted_close": {"type": "boolean", "default": True},
+                },
+                "required": ["tickers"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "to_returns_tool",
+            "description": "Convert price DataFrame to returns DataFrame. Use {'__ref__': <id>} for 'prices'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prices": {"type": "object"},
+                    "method": {"type": "string", "enum": ["log", "simple"], "default": "log"},
+                    "dropna": {"type": "boolean", "default": True},
+                },
+                "required": ["prices"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "forecast_tool",
+            "description": "Forecast annualized expected returns (Prophet).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prices": {"type": "object"},
+                    "horizon": {
+                        "type": "string",
+                        "enum": ["1D","5D","1W","2W","1M","3M","6M","1Y"],
+                        "default": "3M"
+                    },
+                    "tune": {"type": "boolean", "default": False},
+                },
+                "required": ["prices"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "risk_tool",
+            "description": "Compute (annualized) covariance matrix from returns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "returns": {"type": "object"},
+                    "annualize": {"type": "boolean", "default": True},
+                    "trading_days_per_year": {"type": "integer", "default": 252},
+                },
+                "required": ["returns"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "optimize_tool",
+            "description": "Portfolio optimization ('min_var'|'max_ret'|'max_sharpe').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "objective": {"type": "string", "enum": ["min_var", "max_ret", "max_sharpe"]},
+                    "mu_annual": {"type": ["object", "null"]},
+                    "Sigma_annual": {"type": ["object", "null"]},
+                    "rf": {"type": "number", "default": 0.0},
+                },
+                "required": ["objective"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "evaluate_portfolio_tool",
+            "description": "Evaluate portfolio (VaR, μ, σ, Sharpe, allocations).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "default": "Portfolio"},
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "weights": {"type": "object"},
+                    "capital": {"type": "number"},
+                    "mu_annual": {"type": "object"},
+                    "Sigma_annual": {"type": "object"},
+                    "returns_daily": {"type": "object"},
+                    "rf_annual": {"type": "number", "default": 0.0},
+                    "var_alpha": {"type": "number", "default": 0.05},
+                    "var_horizon_days": {"type": "integer", "default": 1},
+                    "log_returns": {"type": "boolean", "default": True},
+                },
+                "required": ["tickers","weights","capital","mu_annual","Sigma_annual","returns_daily"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compile_report_tool",
+            "description": "Aggregate multiple PortfolioResult into summary tables.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "results": {"type": "array", "items": {"type": "object"}}
+                },
+                "required": ["results"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_news_tool",
+            "description": "Fetch recent Finviz headlines for tickers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tickers": {"type": "array", "items": {"type": "string"}},
+                    "lookback_days": {"type": "integer", "default": 3},
+                    "per_ticker_count": {"type": "integer", "default": 15},
+                    "final_cap": {"type": "integer", "default": 200},
+                    "sleep_s": {"type": "number", "default": 0.5},
+                },
+                "required": ["tickers"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sentiment_score_titles_tool",
+            "description": "Score news titles' near-term impact. Accepts DataFrame/list[dict]/list[str]/str.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "object"},
+                    "model_name": {"type": "string", "default": "gpt-4.1-mini"},
+                    "api_key": {"type": ["string", "null"], "default": None},
+                    "default_ticker": {"type": ["string", "null"], "default": None},
+                    "limit": {"type": "integer", "default": 200},
+                },
+                "required": ["items"],
+            },
+        },
+    },
+]
+
+# 工具名字 -> 实际可调用函数（保持你 tools.py 的签名）
+TOOL_FUNCS = {
     "fetch_prices_tool": T.fetch_prices_tool,
     "to_returns_tool": T.to_returns_tool,
     "forecast_tool": T.forecast_tool,
@@ -44,449 +451,379 @@ AVAILABLE_TOOLS: Dict[str, Any] = {
     "sentiment_score_titles_tool": T.sentiment_score_titles_tool,
 }
 
-# 给 LLM 的工具“说明书”（告诉模型有哪些工具、参数含义）
-TOOLS_SPEC = """
-You are a financial analysis agent. You must produce a single JSON object with:
+# ----------------------------
+# 系统提示：严格范围 & 使用工具
+# ----------------------------
+SCOPE_GUARD_PROMPT = """
+You are QuantChat, a conversational **quant agent**.
+You MUST follow these hard rules:
 
-{
-  "plan": "<brief human summary of your plan>",
-  "calls": [
-    {"tool": "<one of AVAILABLE_TOOLS>", "args": { ... }},
-    ...
-  ]
-}
+1) **Only** handle tasks that are computable via your tools: prices→returns, Prophet expected returns, covariance, optimization, portfolio evaluation (μ,σ,Sharpe, VaR), news & sentiment.
+2) If the user asks anything outside this scope (health, travel, generic coding, jokes, etc.), **refuse** with a brief sentence: 
+   "I only answer quantitative questions I can compute with my tools."
+3) If required inputs are missing (e.g., tickers, horizon, capital), **ask a short follow-up** first.
+4) Prefer **tool calls** to ground your answers. You may ask brief clarifying questions without tools.
+5) When you have sufficient info, call tools in minimal steps and then reply with a concise, user-facing summary.
+6) You may reference previous results using {"__ref__": "<object_id>"}; never invent data.
+7) Be numerically explicit about dates, horizons, units, and confidence levels (e.g., “VaR(95%, 1d)”).
+8) Never output a numeric result unless it was computed via a successful tool call in this conversation; if a tool fails, try a minimal alternative tool chain or ask for the missing inputs.
 
-AVAILABLE_TOOLS (and expected args):
-
-1) fetch_prices_tool:
-   args: {
-     "tickers": [str, ...],
-     "lookback_days": int (e.g., 252),
-     "end": null or "YYYY-MM-DD",
-     "pad_ratio": float (default 2.0),
-     "auto_business_align": bool (default true),
-     "use_adjusted_close": bool (default true)
-   }
-   returns: price DataFrame (index=dates, columns=tickers)
-
-2) to_returns_tool:
-   args: {
-     "prices": "<REF: name of previous call result>",
-     "method": "log" or "simple" (default "log"),
-     "dropna": true
-   }
-   returns: returns DataFrame
-
-3) forecast_tool:
-   args: {
-     "prices": "<REF: name of previous call result>",
-     "horizon": "1M"|"3M"|"6M" (default "3M"),
-     "tune": false
-   }
-   returns: expected annualized returns (pd.Series indexed by tickers)
-
-4) risk_tool:
-   args: {
-     "returns": "<REF: name of previous call result>",
-     "annualize": true,
-     "trading_days_per_year": 252
-   }
-   returns: annualized covariance matrix (pd.DataFrame)
-
-5) optimize_tool:
-   args: {
-     "objective": "min_var"|"max_ret"|"max_sharpe",
-     "mu_annual": "<REF to pd.Series>" (needed for max_ret / max_sharpe),
-     "Sigma_annual": "<REF to pd.DataFrame>" (needed for min_var / max_sharpe),
-     "rf": 0.0
-   }
-   returns: np.ndarray weights
-
-6) evaluate_portfolio_tool:
-   args: {
-     "name": str,
-     "tickers": [str, ...],
-     "weights": "<REF to np.ndarray>",
-     "capital": float,
-     "mu_annual": "<REF to pd.Series>",
-     "Sigma_annual": "<REF to pd.DataFrame>",
-     "returns_daily": "<REF to pd.DataFrame>",
-     "rf_annual": 0.0,
-     "var_alpha": 0.05,
-     "var_horizon_days": 1,
-     "log_returns": true
-   }
-   returns: PortfolioResult dataclass
-
-7) compile_report_tool:
-   args: {
-     "results": ["<REF to PortfolioResult>", ...]
-   }
-   returns: (summary_df, risk_df, allocation_df)
-
-8) fetch_news_tool:
-   args: {
-     "tickers": [str, ...],
-     "lookback_days": 3,
-     "per_ticker_count": 15,
-     "final_cap": 200,
-     "sleep_s": 0.5
-   }
-   returns: news DataFrame (ticker, headline, source, url, datetime, ...)
-
-9) sentiment_score_titles_tool:
-   args: {
-     "items": [{"ticker": str, "headline": str}, ...],
-     "model_name": "gpt-4.1-mini",
-     "api_key": null  // if null, use env OPENAI_API_KEY/OPENAI
-   }
-   returns: list of dicts each with {"impact": float, "ai_raw": str, "ai_json": dict, ...}
-
-RULES:
-- Always output STRICT JSON only (no markdown, no extra text).
-- When referring to the output of a previous call as an argument, pass it by a string token
-  of the form: {"__ref__": "<CALL_NAME>"} where CALL_NAME is a unique name you assign for that call.
-- Include a unique "name" field for each call object, e.g. {"name":"step1_prices", "tool":..., "args":{...}}
-- Make sure dependencies are ordered (a call must come after calls whose outputs it references).
-- If the user did not provide tickers or dates, choose reasonable defaults and explain them in "plan".
+Output style: crisp, factual, computable. Refuse gracefully when out-of-scope.
 """
 
-SYSTEM_PROMPT = f"""
-You are a careful planner and tool-calling orchestrator.
-{TOOLS_SPEC}
-"""
-
-def _parse_hints_from_instruction(text: str) -> Dict[str, Any]:
-    """
-    从自然语言里尽可能解析：tickers, horizon, capital, objective
-    注意：为避免把 '1M'（1个月）误识别为 1,000,000，这里对 capital 的解析采取更严格规则：
-      - 先剔除时间单位（\d+(W|M|Y)）
-      - 仅当出现 $ 或资金语义关键词时才识别金额
-    """
-    t = text.upper()
-
-    # ---- tickers ----
-    candidates = re.findall(r"\b[A-Z][A-Z0-9.\-]{0,4}\b", t)
-    blacklist = {
-        "FOR", "AND", "WITH", "NEXT", "THEN", "INCLUDE", "CAPITAL", "EVALUATE",
-        "ANALYZE", "OPTIMIZE", "MAX", "SHARPE", "RET", "VAR", "RF", "W", "M", "Y"
-    }
-    tickers = [c for c in candidates if c not in blacklist]
-    seen = set()
-    tickers = [x for x in tickers if not (x in seen or seen.add(x))][:10]
-
-    # ---- horizon: 1W/1M/3M/6M/12M/1Y ----
-    m = re.search(r"\b(\d{1,2})\s*(W|M|Y)\b", t)
-    horizon = None
-    if m:
-        n, u = int(m.group(1)), m.group(2)
-        horizon = f"{n}{u}"
-
-    # ---- capital（严格模式，避免把 1M 时间误判为金额）----
-    # 先去掉时间表达，防止 '1M'(1 month) 被当金额
-    t_no_time = re.sub(r"\b\d{1,2}\s*(W|M|Y)\b", " ", t)
-
-    cap = None
-    # 1) 优先匹配带 $ 的写法：$200000 / $200k / $1.5m / $2b
-    m = re.search(r"\$\s*([\d,.]+)\s*([KMB])?\b", t_no_time)
-
-    # 2) 若未匹配到，再匹配带资金语义关键词：CAPITAL/BUDGET/INVEST/ALLOCATE/CASH
-    #    例如：capital 200k / invest 1.2m
-    if not m:
-        m = re.search(
-            r"(CAPITAL|BUDGET|INVEST|ALLOCATE|CASH)\s*[:=]?\s*\$?\s*([\d,.]+)\s*([KMB])?\b",
-            t_no_time
-        )
-
-    if m:
-        # 如果命中关键词版本，数字在 group(2)；带 $ 版本在 group(1)
-        if m.lastindex == 3:
-            num_s, unit = m.group(2), (m.group(3) or "").upper()
-        else:
-            num_s, unit = m.group(1), (m.group(2) or "").upper()
-
-        try:
-            num = float(num_s.replace(",", ""))
-            mul = 1.0
-            if unit == "K":
-                mul = 1e3
-            elif unit == "M":
-                mul = 1e6
-            elif unit == "B":
-                mul = 1e9
-            cap = float(num * mul)
-        except Exception:
-            cap = None  # 容错：解析失败则忽略
-
-    # ---- objective ----
-    objective = None
-    if "MAX_SHARPE" in t or ("MAX" in t and "SHARPE" in t):
-        objective = "max_sharpe"
-    elif "MIN_VAR" in t or "MIN VARIANCE" in t:
-        objective = "min_var"
-    elif "MAX_RET" in t or "MAX RETURN" in t:
-        objective = "max_ret"
-
-    return {
-        "tickers": tickers or None,
-        "horizon": horizon or None,
-        "capital": cap,          # 若无明确资金写法将保持 None，不会误把 1M 当钱
-        "objective": objective or None,
-        "lookback_days": 252,
-        "rf": 0.0,
-    }
-
-
-def _postprocess_plan(plan: Dict[str, Any], hints: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    用 hints 修补/覆盖 LLM 计划里的关键参数（如 capital、horizon、tickers、objective）。
-    同时保证 evaluate_portfolio_tool 一定有 capital>0。
-    """
-    calls = plan.get("calls", [])
-    if not isinstance(calls, list):
-        return plan
-
-    # 把 calls 列表转为 name->call 的索引，方便引用
-    name_index = {c.get("name", f"step{i+1}"): c for i, c in enumerate(calls)}
-
-    # 1) 修补 fetch_prices 的 tickers / lookback_days
-    for c in calls:
-        if c.get("tool") == "fetch_prices_tool":
-            args = c.setdefault("args", {})
-            if hints.get("tickers"):
-                args["tickers"] = hints["tickers"]
-            args.setdefault("lookback_days", hints.get("lookback_days", 252))
-
-    # 2) 修补 forecast 的 horizon
-    for c in calls:
-        if c.get("tool") == "forecast_tool":
-            args = c.setdefault("args", {})
-            if hints.get("horizon"):
-                args["horizon"] = hints["horizon"]
-
-    # 3) 修补 optimize 的 objective / rf
-    for c in calls:
-        if c.get("tool") == "optimize_tool":
-            args = c.setdefault("args", {})
-            if hints.get("objective"):
-                args["objective"] = hints["objective"]
-            args.setdefault("rf", hints.get("rf", 0.0))
-
-    # 4) 修补 evaluate_portfolio 的 capital 和 tickers
-    eval_calls = [c for c in calls if c.get("tool") == "evaluate_portfolio_tool"]
-    if eval_calls:
-        ec = eval_calls[-1]
-        eargs = ec.setdefault("args", {})
-        # capital
-        cap = hints.get("capital")
-        if cap and (not isinstance(eargs.get("capital"), (int, float)) or eargs.get("capital", 0) <= 0):
-            eargs["capital"] = float(cap)
-        # tickers
-        if hints.get("tickers"):
-            eargs["tickers"] = hints["tickers"]
-        # 默认名
-        eargs.setdefault("name", "Portfolio (LLM)")
-    else:
-        # 如果计划里没有评估步骤，自动追加一个
-        # 这里默认引用常见名字；若名字不同，LLM 计划里也会给出，我们通常已经执行到那一步了
-        eval_call = {
-            "name": "evaluate_portfolio",
-            "tool": "evaluate_portfolio_tool",
-            "args": {
-                "name": "Portfolio (LLM)",
-                "tickers": hints.get("tickers") or [],
-                "weights": {"__ref__": "optimize_max_sharpe"},  # 常见名称；如果不同，用户一跑就能看到 KeyError 来修
-                "capital": float(hints.get("capital") or 100000.0),
-                "mu_annual": {"__ref__": "forecast_returns"},
-                "Sigma_annual": {"__ref__": "risk_cov"},
-                "returns_daily": {"__ref__": "to_returns"},
-                "rf_annual": hints.get("rf", 0.0),
-                "var_alpha": 0.05,
-                "var_horizon_days": 1,
-                "log_returns": True,
-            },
-        }
-        calls.append(eval_call)
-
-    plan["calls"] = calls
-    return plan
-
-
-def _coerce_for_model(x: Any) -> Any:
-    """把复杂对象压缩为可读/轻量对象，供可选的总结用（不传回 LLM也可）。"""
-    if x is None:
-        return None
-    if isinstance(x, (str, int, float, bool)):
-        return x
-    if isinstance(x, np.ndarray):
-        return {"__ndarray__": True, "shape": list(x.shape), "preview": x[:10].tolist()}
-    if isinstance(x, pd.Series):
-        return {"__series__": True, "index_preview": x.index[:10].tolist(), "values_preview": x.iloc[:10].tolist()}
-    if isinstance(x, pd.DataFrame):
-        return {
-            "__dataframe__": True,
-            "shape": [x.shape[0], x.shape[1]],
-            "columns": x.columns.tolist()[:20],
-            "head": x.head(5).to_dict(orient="split"),
-        }
-    if is_dataclass(x):
-        return {"__dataclass__": True, "fields": asdict(x)}
-    if isinstance(x, (list, tuple)):
-        return [_coerce_for_model(v) for v in x]
-    if isinstance(x, dict):
-        return {k: _coerce_for_model(v) for k, v in x.items()}
-    return str(type(x))
-
-def _resolve_arg(value: Any, ctx: Dict[str, Any]) -> Any:
-    """把 {"__ref__": "call_name"} 解析为真实对象；其他原样返回。"""
-    if isinstance(value, dict) and set(value.keys()) == {"__ref__"}:
-        key = value["__ref__"]
-        if key not in ctx:
-            raise KeyError(f"Reference not found: {key}")
-        return ctx[key]
-    return value
-
-class StockAgent:
-    def __init__(self, model: str = DEFAULT_MODEL, verbose: bool = True, system_prompt: Optional[str] = None):
+# ----------------------------
+# 对话式 Agent（函数调用循环）
+# ----------------------------
+class ChatStockAgent:
+    def __init__(self, model: str = "gpt-4.1-mini", verbose: bool = True, system_prompt: Optional[str] = None):
+        self.client = OpenAI()  # 依赖 OPENAI_API_KEY/OPENAI
         self.model = model
         self.verbose = verbose
-        self.client = OpenAI()  # 依赖环境变量 OPENAI_API_KEY 或 OPENAI
-        self.system_prompt = system_prompt or SYSTEM_PROMPT 
+        self.system_prompt = system_prompt or SCOPE_GUARD_PROMPT
+        self.reset()
+
+    def reset(self):
+        self.messages: List[Dict[str, str]] = [{"role": "system", "content": self.system_prompt}]
+        self.store = ObjectStore()
 
     def _log(self, msg: str):
-        if self.verbose:
-            logger.info(msg)
+        if self.verbose: logger.info(msg)
+    
+    # 在 ChatStockAgent 类里新增（和其他帮助函数平级）
+    def _sanitize_forecast_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        hz = str(args.get("horizon", "3M")).upper().strip()
 
-    def plan(self, instruction: str, hints: Dict[str, Any]) -> Dict[str, Any]:
-        """让 LLM 产出 JSON 计划（单轮），并给出 HINTS 作为先验"""
-        self._log("🧠 Planning with LLM...")
-        t0 = time.perf_counter()
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "system", "content": "HINTS: " + json.dumps(hints)},
-                {"role": "user", "content": instruction},
-            ],
-        )
-        ms = (time.perf_counter() - t0) * 1000
-        self._log(f"🧾 Plan received in {ms:.0f} ms")
+        aliases = {
+            "1DAY": "1D",
+            "DAILY": "1D",
+            "5DAY": "5D",
+            "1WEEK": "1W",
+            "2WEEK": "2W",
+            "1MONTH": "1M",
+            "3MONTH": "3M",
+            "6MONTH": "6M",
+            "12M": "1Y",
+            "1YEAR": "1Y",
+            "12MONTH": "1Y",
+        }
 
-        content = resp.choices[0].message.content or "{}"
+        hz = aliases.get(hz, hz)
+        if hz not in ALLOWED_HORIZONS:
+            hz = "3M"  # 安全默认
+
+        args["horizon"] = hz
+        return args
+
+    def _complete_eval_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        针对 evaluate_portfolio_tool 自动补齐缺失参数：
+        - returns_daily：若缺，从对象仓库中找最后一个 DataFrame
+        - tickers：来自 returns_daily.columns
+        - mu_annual：returns_daily.mean() * 252
+        - Sigma_annual：returns_daily.cov() * 252
+        - weights：等权（与 tickers 对齐）
+        - name：默认 'Auto (EW)'
+        - capital：若缺，默认 100000.0
+        """
+        import pandas as pd
+        import numpy as np
+
+        # 找 returns_daily
+        rets = args.get("returns_daily")
+        if rets is None:
+            for rid in reversed(list(self.store._store.keys())):
+                obj = self.store._store[rid]
+                if isinstance(obj, pd.DataFrame):
+                    rets = obj
+                    break
+            if rets is not None:
+                args["returns_daily"] = rets
+        if rets is None:
+            raise RuntimeError("evaluate_portfolio_tool requires 'returns_daily' DataFrame; none available.")
+
+        # tickers
+        if not args.get("tickers"):
+            args["tickers"] = list(rets.columns)
+
+        # mu_annual
+        if args.get("mu_annual") is None:
+            args["mu_annual"] = rets.mean() * 252
+
+        # Sigma_annual
+        if args.get("Sigma_annual") is None:
+            args["Sigma_annual"] = rets.cov() * 252
+
+        # weights
+        if args.get("weights") is None:
+            n = len(args["tickers"])
+            args["weights"] = np.full(n, 1.0 / max(n, 1), dtype=float)
+
+        # name
+        if not args.get("name"):
+            args["name"] = "Auto (EW)"
+
+        # capital
+        if not isinstance(args.get("capital"), (int, float)) or args["capital"] <= 0:
+            args["capital"] = 100000.0
+
+        return args
+
+    def _parse_rf(self, x) -> float:
+        """把 rf 统一成 float（支持 '2%', '0.02', 0.02 等；异常时回退 0.0）。"""
         try:
-            plan = json.loads(content)
+            if isinstance(x, str):
+                s = x.strip()
+                if s.endswith("%"):
+                    return float(s[:-1].strip()) / 100.0
+                return float(s)
+            return float(x)
+        except Exception:
+            return 0.0
+
+
+    def _complete_opt_args(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        针对 optimize_tool 自动补齐：
+        - rf：解析百分号等文本为 float
+        - mu_annual / Sigma_annual：若缺则从对象仓库抓；再不行就用 returns 现算（252 年化）
+        - 对齐 index/columns，确保 μ 的 index ⊆ Σ 的 columns 且同序
+        """
+        import pandas as pd
+        import numpy as np
+
+        # 1) rf 解析
+        args["rf"] = self._parse_rf(args.get("rf", 0.0))
+
+        mu = args.get("mu_annual")
+        Sigma = args.get("Sigma_annual")
+
+        # 2) 若缺 μ/Σ：从仓库找最近的 Series(DataFrame) / 方阵 DataFrame
+        def _looks_square(df: pd.DataFrame) -> bool:
+            return isinstance(df, pd.DataFrame) and df.shape[0] == df.shape[1] and list(df.columns) == list(df.index)
+
+        def _find_latest_series() -> Optional[pd.Series]:
+            for rid in reversed(list(self.store._store.keys())):
+                obj = self.store._store[rid]
+                if isinstance(obj, pd.Series):
+                    return obj
+            return None
+
+        def _find_latest_square_df() -> Optional[pd.DataFrame]:
+            for rid in reversed(list(self.store._store.keys())):
+                obj = self.store._store[rid]
+                if _looks_square(obj):
+                    return obj
+            return None
+
+        if mu is None:
+            mu = _find_latest_series()
+        if Sigma is None:
+            Sigma = _find_latest_square_df()
+
+        # 3) 仍缺的话：用“最近的 returns DataFrame”现算 μ/Σ
+        if mu is None or Sigma is None:
+            rets = None
+            for rid in reversed(list(self.store._store.keys())):
+                obj = self.store._store[rid]
+                if isinstance(obj, pd.DataFrame) and not _looks_square(obj):
+                    # 有时间索引/非方阵 → 更像 returns；价格 / returns 都非方阵，这里不做过细区分
+                    rets = obj
+                    break
+            if rets is None:
+                # 没法补
+                return args
+
+            if mu is None:
+                mu = rets.mean() * 252
+            if Sigma is None:
+                Sigma = rets.cov() * 252
+
+        # 4) μ/Σ 类型清洗：μ 必须是 Series；如果 μ 是 1 列 DF → 转 Series
+        if isinstance(mu, pd.DataFrame):
+            if mu.shape[1] == 1:
+                mu = mu.iloc[:, 0]
+            else:
+                # 多列时取第一列（保守）
+                mu = mu.iloc[:, 0]
+
+        # 5) 对齐 μ 与 Σ（交集 + 排序一致）
+        common = [t for t in mu.index if t in Sigma.columns]
+        if not common:
+            # 无交集，给优化器留给它自己报错
+            args["mu_annual"] = mu
+            args["Sigma_annual"] = Sigma
+            return args
+
+        mu = mu.loc[common]
+        Sigma = Sigma.loc[common, common]
+
+        # 6) 写回
+        args["mu_annual"] = mu
+        args["Sigma_annual"] = Sigma
+        return args
+
+
+    def _autofill_primary_arg(self, tool_name: str, args: Any, store: "ObjectStore") -> Any:
+        """
+        根据目标工具需要，优先从对象仓库里挑“最像”的对象自动补主参数：
+        - to_returns_tool / forecast_tool:   选“像价格”的 DataFrame（DatetimeIndex，非方阵，值量纲明显>0.5）
+        - risk_tool:                         选“像收益”的 DataFrame（DatetimeIndex，非方阵，值量纲<0.5 的小数）
+        若找不到，就保持原样（交给后续校验/报错）。
+        """
+        if not isinstance(args, dict):
+            return args
+
+        expected, _ = PRIMARY_PARAM.get(tool_name, (None, set()))
+        if expected is None or expected in args:
+            return args
+
+        import pandas as pd
+        import numpy as np
+
+        def _has_dt_idx(df: pd.DataFrame) -> bool:
+            return isinstance(df.index, (pd.DatetimeIndex, pd.PeriodIndex))
+
+        def _is_square(df: pd.DataFrame) -> bool:
+            return df.shape[0] == df.shape[1] and list(df.columns) == list(df.index)
+
+        def _median_abs(df: pd.DataFrame) -> float:
+            with np.errstate(all='ignore'):
+                return float(np.nanmedian(np.abs(df.values)))
+
+        def _looks_like_prices(df: pd.DataFrame) -> bool:
+            # 时间索引 + 非方阵 + 价格量级（>0.5，大多数股价满足；便士股极端情况不影响你这几个大盘股）
+            return _has_dt_idx(df) and not _is_square(df) and _median_abs(df) > 0.5
+
+        def _looks_like_returns(df: pd.DataFrame) -> bool:
+            # 时间索引 + 非方阵 + 小数量级（<0.5）
+            return _has_dt_idx(df) and not _is_square(df) and _median_abs(df) < 0.5
+
+        # 逆序遍历仓库（最近的在前），挑最合适的
+        if tool_name in {"to_returns_tool", "forecast_tool"}:
+            for rid in reversed(list(store._store.keys())):
+                obj = store._store[rid]
+                if isinstance(obj, pd.DataFrame) and _looks_like_prices(obj):
+                    args[expected] = obj
+                    break
+
+        elif tool_name == "risk_tool":
+            for rid in reversed(list(store._store.keys())):
+                obj = store._store[rid]
+                if isinstance(obj, pd.DataFrame) and _looks_like_returns(obj):
+                    args[expected] = obj
+                    break
+
+        return args
+
+
+    def _run_tool(self, name: str, raw_args: Dict[str, Any]) -> Dict[str, Any]:
+        fn = TOOL_FUNCS[name]
+
+        # 1) 归一化
+        fixed_args = _normalize_args(name, raw_args)
+        # 2) 解引用
+        args = self.store.resolve_refs(fixed_args)
+        # 3) 自动补主参数
+        args = self._autofill_primary_arg(name, args, self.store)
+        # 3.5) 特定工具的进一步补齐/清洗
+        if name == "evaluate_portfolio_tool":
+            args = self._complete_eval_args(args)
+        elif name == "optimize_tool":
+            args = self._complete_opt_args(args)
+        elif name == "forecast_tool":
+            args = self._sanitize_forecast_args(args)   # ← 加这一行
+        # 4) 清理未声明参数（已有的 _prune_kwargs）
+        args = _prune_kwargs(name, args)
+
+        # 4.1) 强制必填项
+        must = REQUIRED_KW.get(name, set())
+        missing = [k for k in must if k not in args]
+        if missing:
+            raise T.ToolExecutionError(f"{name} missing required args: {missing}.")
+        # 5) 真正调用（to_returns 的 simple 回退保留）
+        try:
+            result = fn(**args)
         except Exception as e:
-            raise RuntimeError(f"LLM did not return valid JSON: {e}\nRaw: {content}") from e
+            if name == "to_returns_tool" and "non positive" in str(e).lower():
+                args = dict(args); args.setdefault("method", "simple")
+                result = fn(**args)
+            elif name == "forecast_tool":
+                # 额外兜底：万一还有奇怪 horizon，强制退回 3M 再试一次
+                args = dict(args); args["horizon"] = "3M"
+                result = fn(**args)
+            else:
+                raise
 
-        if "calls" not in plan or not isinstance(plan["calls"], list):
-            raise RuntimeError(f"Plan JSON missing 'calls': {plan}")
-        for i, c in enumerate(plan["calls"], 1):
-            if "name" not in c:
-                c["name"] = f"step{i}"
-        return plan
-
-    def execute(self, plan: Dict[str, Any]) -> Dict[str, Any]:
-        """按计划顺序执行每个工具调用。"""
-        ctx: Dict[str, Any] = {}
-        self._log(f"📋 Plan: {plan.get('plan','(no plan text)')}")
-        for call in plan["calls"]:
-            name = call.get("name")
-            tool = call.get("tool")
-            args = call.get("args", {})
-            if tool not in AVAILABLE_TOOLS:
-                raise RuntimeError(f"Unknown tool: {tool}")
-
-            # 解析引用参数
-            real_args = {k: _resolve_arg(v, ctx) for k, v in args.items()}
-
-            self._log(f"🔧 {name} → {tool}({list(real_args.keys())})")
-            fn = AVAILABLE_TOOLS[tool]
-            result = fn(**real_args)  # 这里的错误会由工具层抛出 ToolExecutionError
-
-            # 保存到上下文供后续引用
-            ctx[name] = result
-
-        self._log("✅ All steps completed.")
-        return ctx
-
-    def run(self, instruction: str) -> Dict[str, Any]:
-        hints = _parse_hints_from_instruction(instruction)
-        plan = self.plan(instruction, hints)
-        plan = _postprocess_plan(plan, hints)
-
-        # 打印完整的“思考产物”——JSON 计划
-        self._log("🧩 Full Plan JSON:")
-        print(json.dumps(plan, ensure_ascii=False, indent=2))
-
-        results = self.execute(plan)
-
-        # 生成一个人类可读的总结（不走 LLM，直接基于结果对象）
-        summary_text = self._human_summary(plan, results)
-
-        # 轻量结构化摘要（用于前端展示）
-        summary = {k: _coerce_for_model(v) for k, v in results.items()}
-        return {"plan": plan, "results": results, "summary": summary, "text_summary": summary_text}
-
-    def _human_summary(self, plan: Dict[str, Any], ctx: Dict[str, Any]) -> str:
-        """基于执行结果，打印权重/指标的简明总结。"""
-        # 找到 evaluate_portfolio_tool 的结果
-        eval_names = [c["name"] for c in plan.get("calls", []) if c.get("tool") == "evaluate_portfolio_tool"]
-        pr = None
-        for nm in reversed(eval_names):
-            if nm in ctx:
-                pr = ctx[nm]
-                break
-        lines = []
-        if pr is not None:
-            # PortfolioResult dataclass
-            try:
-                name = getattr(pr, "name", "Portfolio")
-                weights = getattr(pr, "weights", None)  # pd.Series
-                exp = getattr(pr, "exp_return_annual", None)
-                vol = getattr(pr, "volatility_annual", None)
-                sharpe = getattr(pr, "sharpe", None)
-                var_alpha = getattr(pr, "var_alpha", None)
-                var_value = getattr(pr, "var_value", None)
-                vh = getattr(pr, "var_horizon_days", None)
-
-                lines.append(f"Portfolio: {name}")
-                if isinstance(weights, pd.Series):
-                    topw = weights.sort_values(ascending=False).head(10)
-                    lines.append("Top weights:")
-                    for k, v in topw.items():
-                        lines.append(f"  - {k}: {v:.2%}")
-                if exp is not None and vol is not None and sharpe is not None:
-                    lines.append(f"Annualized μ={exp:.2%}, σ={vol:.2%}, Sharpe={sharpe:.2f}")
-                if var_alpha is not None and var_value is not None and vh is not None:
-                    conf = int((1 - var_alpha) * 100)
-                    lines.append(f"VaR({conf}%, {vh}d) ≈ {var_value:.2%} loss")
-            except Exception as e:
-                lines.append(f"(summary failed: {e})")
-        else:
-            lines.append("No evaluate_portfolio_tool result found.")
-
-        return "\n".join(lines)
+        ref = self.store.put(result)
+        preview = _coerce_preview(result)
+        return {"ok": True, "ref": ref, "preview": preview}
 
 
 
-# ------------------------
-# 便捷 CLI / 调试入口
-# ------------------------
+    def ask(self, user_text: str) -> str:
+        self.messages.append({"role": "user", "content": user_text})
+        hops = 0
+        while True:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=self.messages,
+                tools=TOOLS_SPEC,
+                tool_choice="auto",
+                temperature=0.2,
+            )
+            msg = resp.choices[0].message
+
+            if msg.tool_calls:
+                hops += 1
+                if self.verbose:
+                    self._log(f"Tool calls: {[tc.function.name for tc in msg.tool_calls]}")
+                if hops > 8:
+                    text = "Tool hop limit reached. Please narrow the request."
+                    self.messages.append({"role": "assistant", "content": text})
+                    return text
+
+                self.messages.append({"role": "assistant", "content": msg.content or "", "tool_calls": msg.tool_calls})
+                for tc in msg.tool_calls:
+                    name = tc.function.name
+                    args = json.loads(tc.function.arguments or "{}")
+                    try:
+                        tool_out = self._run_tool(name, args)
+                    except Exception as e:
+                        tool_out = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                    self.messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "name": name,
+                        "content": json.dumps(tool_out, ensure_ascii=False),
+                    })
+                continue
+
+            text = (msg.content or "").strip()
+            self.messages.append({"role": "assistant", "content": text})
+            return text
+
+
+# ----------------------------
+# CLI 示例
+# ----------------------------
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Stock Agent (LLM planning + tool execution)")
-    parser.add_argument("instruction", type=str, nargs="*", help="Natural language task")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL)
+    parser = argparse.ArgumentParser(description="QuantChat — Chat-style Quant Agent with tools")
+    parser.add_argument("--model", type=str, default="gpt-4.1-mini")
     args = parser.parse_args()
 
-    instruction = " ".join(args.instruction) or \
-        "Analyze AAPL and MSFT for the next 1M, include sentiment, optimize max_sharpe, then evaluate with $100000 capital."
+    agent = ChatStockAgent(model=args.model, verbose=True)
+    print("QuantChat ready. Ask things like:")
+    print("  - 'Compute 1d 95% VaR for AAPL with $100k using last 252 days.'")
+    print("  - 'Optimize max_sharpe for AAPL, MSFT, NVDA; rf=2%.'")
+    print("-"*60)
 
-    agent = StockAgent(model=args.model, verbose=True)
-    out = agent.run(instruction)
-    # 打印一个简短摘要（避免把完整 DataFrame 打到控制台）
-    print(json.dumps({"plan": out["plan"], "steps": list(out["summary"].keys())}, ensure_ascii=False, indent=2))
-    print("\n=== Summary ===\n" + out.get("text_summary", "(no summary)"))
-
+    while True:
+        try:
+            q = input("\nYou: ").strip()
+            if not q: continue
+            if q.lower() in {"exit", "quit"}: break
+            ans = agent.ask(q)
+            print("\nAgent:", ans)
+        except KeyboardInterrupt:
+            break
