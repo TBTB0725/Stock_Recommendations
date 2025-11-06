@@ -124,10 +124,66 @@ def _mount_agent_mode():
 
 
 # === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
-agent_mode = st.sidebar.toggle("🤖 Agent mode", value=False, help="开启后仅显示智能体面板，不影响原有功能")
+agent_mode = st.sidebar.toggle(
+    "🤖 Agent mode",
+    value=False,
+    help="Show only the QuantChat agent interface and hide the manual parameter panel.",
+)
+
 if agent_mode:
+    # === Sidebar: What this agent can do ===
+    st.sidebar.markdown("### 🧠 What QuantChat can do")
+
+    st.sidebar.markdown(
+        """
+**Data & Preprocessing**
+- Fetch historical price data (US equities via supported data source).
+- Convert prices into daily returns (log or simple).
+
+**Expected Return & Risk**
+- Forecast annualized expected returns using Prophet for:
+  - 1D, 5D, 1W, 2W, 1M, 3M, 6M, 1Y horizons.
+- Compute risk metrics:
+  - Covariance matrix
+  - Volatility and correlations
+
+**Portfolio Construction**
+- Build rule-based strategies:
+  - Minimum-variance portfolio (`min_var`)
+  - Maximum-return portfolio (`max_ret`)
+  - Maximum-Sharpe portfolio (`max_sharpe`)
+- Respect your constraints and inputs (tickers, capital, rf, etc.).
+
+**Portfolio Evaluation**
+- Evaluate any given weights with:
+  - Annualized return and volatility
+  - Sharpe ratio
+  - Value-at-Risk (VaR) for chosen confidence level and horizon
+        """
+    )
+
+    st.sidebar.markdown(
+        """
+**Example questions**
+- "With $100,000 and tickers AAPL, MSFT, NVDA, build a max_sharpe portfolio using the last 252 trading days and rf = 2%."
+- "I have $10,000. For the next 1M horizon, is AAPL or AMZN more attractive based on your forecasts and risk?"
+- "Compare TSLA and NVDA over the last year: expected return, volatility, and Sharpe."
+- "Here are my weights for AAPL, MSFT, AMZN. Please evaluate μ, σ, Sharpe, and 1D 95% VaR."
+        """
+    )
+
+    st.sidebar.markdown(
+        """
+**Limitations**
+- Answers are strictly based on the available tools and market data.
+- No price guessing, no macro predictions beyond what tools compute.
+- No advice on health, relationships, generic coding, or non-quant topics.
+        """
+    )
+
+    # Render chat UI only
     _mount_agent_mode()
-    st.stop()  # 关键：直接终止后续原页面渲染
+    st.stop()
 # ==============================================================
 
 st.title("📈 Stock_Recommendations — Prophet (Growth) + Covariance & VaR (Risk)")
