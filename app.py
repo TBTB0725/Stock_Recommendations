@@ -165,7 +165,7 @@ if agent_mode:
   - A summary table of key metrics
   - Wide-format weights and allocation tables for inspection or export.
 
-**News & Sentiment (optional, when requested)**
+**News & Sentiment**
 - Fetch recent headlines from FINVIZ for selected tickers.
 - Score each (ticker, headline) pair with an LLM for near-term price impact.
 - Return enriched news data you can use as an additional signal.
@@ -190,7 +190,7 @@ if agent_mode:
 - No advice on non-quantitative topics (health, generic life coaching, unrelated coding, etc.).
         """
     )
-    
+
     # Render chat UI only
     _mount_agent_mode()
     st.stop()
