@@ -73,19 +73,18 @@ def _mount_agent_mode():
     else:
         st.warning("No OPENAI_API_KEY found. Set it in secrets or env variables.")
 
-    # 初始化会话状态：一个 agent + 历史消息
+    # Initialize session state: one agent + historical messages    
     if "qc_agent" not in st.session_state:
         st.session_state["qc_agent"] = ChatStockAgent(
             model="gpt-4.1-mini",
             verbose=True,
         )
     if "qc_history" not in st.session_state:
-        # 存简单结构：[{"role": "user"/"assistant", "content": str}, ...]
         st.session_state["qc_history"] = []
 
     agent = st.session_state["qc_agent"]
 
-    # 先把历史消息画出来
+    # Draw out the historical messages  
     for msg in st.session_state["qc_history"]:
         role = msg["role"]
         content = msg["content"]
@@ -93,20 +92,18 @@ def _mount_agent_mode():
         with st.chat_message("user" if role == "user" else "assistant", avatar=avatar):
             st.markdown(content)
 
-    # 输入框（始终在最下面）
+    # Input box
     user_input = st.chat_input("Ask QuantChat anything within its quantitative scope...")
 
     if user_input is not None and user_input.strip() != "":
         user_input = user_input.strip()
 
-        # 1) 立即渲染用户消息（右侧）
         with st.chat_message("user", avatar="🧑"):
             st.markdown(user_input)
         st.session_state["qc_history"].append(
             {"role": "user", "content": user_input}
         )
 
-        # 2) assistant 占位 + 同步调用 agent.ask（用户此时已经看到自己发的内容了）
         with st.chat_message("assistant", avatar="🤖"):
             placeholder = st.empty()
             placeholder.markdown("_Thinking..._")
@@ -120,10 +117,7 @@ def _mount_agent_mode():
             {"role": "assistant", "content": reply}
         )
 
-        # 不强制 rerun；下一轮输入时会带着完整 history 重绘
-
-
-# === Sidebar 顶部放一个 Agent 模式开关；开则渲染 Agent UI 并停止后续渲染 ===
+# === Place an Agent mode switch at the top of the Sidebar===
 agent_mode = st.sidebar.toggle(
     "🤖 Agent mode",
     value=False,
@@ -563,11 +557,10 @@ if run:
         # --------------------------
         # Display
         # --------------------------
-        # ---------- High-level textual recommendation (above all charts) ----------
+        # High-level textual recommendation
         st.markdown("### 📝 Strategy Recommendation Summary")
 
         try:
-            # 找到 horizon 回报列 & VaR 列
             ret_col = next(c for c in summary.columns if c.lower().startswith("return("))
             var_col = "VaR(95%, 1D)" if "VaR(95%, 1D)" in summary.columns else None
 
@@ -583,17 +576,14 @@ if run:
                 parts = [f"{ticker} {weight:.0%}" for ticker, weight in col.items()]
                 return ", ".join(parts)
 
-            # 各策略组合的 top holdings 文本
             ms_text = _top_allocations("Max Sharpe")
             mr_text = _top_allocations("Max Return")
             mv_text = _top_allocations("Min Variance")
 
-            # 各策略在当前 horizon 的预期收益
             h_ret_ms = summary.loc["Max Sharpe", ret_col] if "Max Sharpe" in summary.index else None
             h_ret_mr = summary.loc["Max Return", ret_col] if "Max Return" in summary.index else None
             h_ret_mv = summary.loc["Min Variance", ret_col] if "Min Variance" in summary.index else None
 
-            # 各策略的一天 95% VaR（保持你目前 summary 的口径）
             var_ms = summary.loc["Max Sharpe", var_col] if var_col and "Max Sharpe" in summary.index else None
             var_mr = summary.loc["Max Return", var_col] if var_col and "Max Return" in summary.index else None
             var_mv = summary.loc["Min Variance", var_col] if var_col and "Min Variance" in summary.index else None
