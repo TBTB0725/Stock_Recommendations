@@ -562,6 +562,91 @@ if run:
         # --------------------------
         # Display
         # --------------------------
+        # ---------- High-level textual recommendation (above all charts) ----------
+        st.markdown("### 📝 Strategy Recommendation Summary")
+
+        try:
+            # 找到 horizon 回报列 & VaR 列
+            ret_col = next(c for c in summary.columns if c.lower().startswith("return("))
+            var_col = "VaR(95%, 1D)" if "VaR(95%, 1D)" in summary.columns else None
+
+            def _top_allocations(strategy_name: str, top_n: int = 4) -> str:
+                """Return a string like 'AAPL 30%, MSFT 25%, ...' for the given strategy."""
+                if strategy_name not in weights_tbl.columns:
+                    return ""
+                col = weights_tbl[strategy_name].dropna()
+                col = col[col > 0]
+                if col.empty:
+                    return ""
+                col = col.sort_values(ascending=False).head(top_n)
+                parts = [f"{ticker} {weight:.0%}" for ticker, weight in col.items()]
+                return ", ".join(parts)
+
+            # 各策略组合的 top holdings 文本
+            ms_text = _top_allocations("Max Sharpe")
+            mr_text = _top_allocations("Max Return")
+            mv_text = _top_allocations("Min Variance")
+
+            # 各策略在当前 horizon 的预期收益
+            h_ret_ms = summary.loc["Max Sharpe", ret_col] if "Max Sharpe" in summary.index else None
+            h_ret_mr = summary.loc["Max Return", ret_col] if "Max Return" in summary.index else None
+            h_ret_mv = summary.loc["Min Variance", ret_col] if "Min Variance" in summary.index else None
+
+            # 各策略的一天 95% VaR（保持你目前 summary 的口径）
+            var_ms = summary.loc["Max Sharpe", var_col] if var_col and "Max Sharpe" in summary.index else None
+            var_mr = summary.loc["Max Return", var_col] if var_col and "Max Return" in summary.index else None
+            var_mv = summary.loc["Min Variance", var_col] if var_col and "Min Variance" in summary.index else None
+
+            lines = []
+
+            if ms_text and h_ret_ms is not None:
+                line = (
+                    f"- **Max-Sharpe portfolio (balanced risk/return)**: {ms_text}. "
+                    f"Expected return ≈ {h_ret_ms:.2%} over {h_label}"
+                )
+                if var_ms is not None:
+                    line += f", 1-day 95% VaR ≈ {var_ms:.2%}."
+                else:
+                    line += "."
+                lines.append(line)
+
+            if mr_text and h_ret_mr is not None:
+                line = (
+                    f"- **If you want to maximize return**: {mr_text}. "
+                    f"Expected return ≈ {h_ret_mr:.2%} over {h_label}"
+                )
+                if var_mr is not None:
+                    line += f", 1-day 95% VaR ≈ {var_mr:.2%}."
+                else:
+                    line += "."
+                lines.append(line)
+
+            if mv_text and h_ret_mv is not None:
+                line = (
+                    f"- **If you want to minimize risk**: {mv_text}. "
+                    f"Expected return ≈ {h_ret_mv:.2%} over {h_label}"
+                )
+                if var_mv is not None:
+                    line += f", 1-day 95% VaR ≈ {var_mv:.2%}."
+                else:
+                    line += "."
+                lines.append(line)
+
+            if lines:
+                st.markdown(
+                    "Based on the optimized portfolios and risk/return metrics:\n\n"
+                    + "\n".join(lines)
+                    + "\n\nDetailed numbers and charts are provided below for your review."
+                )
+            else:
+                st.info(
+                    "Portfolios have been computed, but a concise textual summary "
+                    "could not be generated from the current results."
+                )
+
+        except Exception as e:
+            st.warning(f"Failed to generate textual summary: {e}")
+
         days = _H[horizon.upper()]
         r_horizon = (1.0 + mu_annual) ** (days / float(tdpy)) - 1.0
         st.markdown(f"### 📈 Forecasted Return over {h_label}")
