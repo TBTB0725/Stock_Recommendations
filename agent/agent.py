@@ -403,12 +403,6 @@ class ObjectStore:
 # Ensure the correctness of param
 # ---------------------------------
 def _normalize_args(tool_name: str, raw_args: Any) -> Any:
-    """
-    参数规范化（严格模式）：
-      - 如果是裸 {"__ref__": "..."}，包装到该工具的主参数下：
-        例如 to_returns_tool -> {"prices": {"__ref__": "..."}}
-      - 如果缺主参数且只有一个键，且值是 {"__ref__": "..."}，也做同样包装。
-    """
     if not isinstance(raw_args, dict):
         return raw_args
 
@@ -416,20 +410,17 @@ def _normalize_args(tool_name: str, raw_args: Any) -> Any:
     if expected is None:
         return raw_args
 
-    # 裸 __ref__：直接映射到主参数
     if set(raw_args.keys()) == {"__ref__"}:
         return {expected: raw_args}
 
     args = dict(raw_args)
 
-    # 别名 → 主参数（这是显式名字，不是猜数据类型，可以保留）
     if expected not in args:
         for alias in list(args.keys()):
             if alias in aliases:
                 args[expected] = args.pop(alias)
                 break
 
-    # 单键 + __ref__ → 主参数
     if expected not in args and len(args) == 1:
         _, v = next(iter(args.items()))
         if isinstance(v, dict) and set(v.keys()) == {"__ref__"}:
@@ -438,7 +429,6 @@ def _normalize_args(tool_name: str, raw_args: Any) -> Any:
     return args
 
 def _prune_kwargs(tool_name: str, args: Any) -> Any:
-    """删除工具不认识的键（如遗留的 '__ref__'），避免意外 kwargs 抛错。"""
     if not isinstance(args, dict):
         return args
     allowed = ALLOWED_KW.get(tool_name)
@@ -447,10 +437,6 @@ def _prune_kwargs(tool_name: str, args: Any) -> Any:
     return {k: v for k, v in args.items() if k in allowed}
 
 def _validate_types(tool_name: str, args: Dict[str, Any]) -> None:
-    """
-    严格类型校验：只检查“传进来的东西形状对不对”，不做任何猜测或填充。
-    不符合直接 raise ToolExecutionError，让模型自己改参数或问用户。
-    """
     import pandas as pd
     import numpy as np
 
@@ -512,7 +498,6 @@ def _validate_types(tool_name: str, args: Dict[str, Any]) -> None:
             raise T.ToolExecutionError(
                 "optimize_tool: 'Sigma_annual' must be a pandas DataFrame covariance matrix."
             )
-        # 简单方阵校验
         if Sigma.shape[0] != Sigma.shape[1]:
             raise T.ToolExecutionError(
                 "optimize_tool: 'Sigma_annual' must be square."
@@ -585,7 +570,6 @@ def _validate_types(tool_name: str, args: Dict[str, Any]) -> None:
             )
 
     elif tool_name == "sentiment_score_titles_tool":
-        # 这里不死抠类型，因为工具内部支持多种输入形式，只要 items 存在
         if "items" not in args:
             raise T.ToolExecutionError(
                 "sentiment_score_titles_tool: 'items' is required."
@@ -708,7 +692,6 @@ class ChatStockAgent:
         return args
     
     def _parse_rf(self, x) -> float:
-        """严格解析 rf；无效输入直接报错，不回退 0."""
         if isinstance(x, str):
             s = x.strip()
             if s.endswith("%"):
@@ -736,39 +719,38 @@ class ChatStockAgent:
     def _run_tool(self, name: str, raw_args: Dict[str, Any]) -> Dict[str, Any]:
         fn = TOOL_FUNCS[name]
 
-        # 1) 归一化当前调用参数（只用调用里给的东西，不看历史）
+        # 1) Normalize call arguments (only use what's in this call, ignore history)
         fixed_args = _normalize_args(name, raw_args)
 
-        # 2) 解析 {"__ref__": "..."} 为真实对象
+        # 2) Resolve {"__ref__": "..."} into real objects
         args = self.store.resolve_refs(fixed_args)
 
-        # 3) 特定工具的小范围参数清洗（不引入新数据）
+        # 3) Tool-specific light argument sanitization (no new data introduced)
         if name == "forecast_tool":
             args = self._sanitize_forecast_args(args)
         if name == "optimize_tool":
-            # 只把 rf 从 "2%" 这类格式转成数值，不自动造 mu/Sigma
             if "rf" in args:
                 args["rf"] = self._parse_rf(args["rf"])
 
-        # 4) 删除未在 ALLOWED_KW 声明的多余参数，避免脏键
+        # 4) Drop any keys not declared in ALLOWED_KW to avoid dirty kwargs
         args = _prune_kwargs(name, args)
 
-        # 5) 检查必填参数是否都在（严格模式）
+        # 5) Check required arguments are present (strict mode)
         must = REQUIRED_KW.get(name, set())
         missing = [k for k in must if k not in args]
         if missing:
             raise T.ToolExecutionError(f"{name} missing required args: {missing}.")
 
-        # 6) 类型校验（严格，不做猜测）
+        # 6) Strict type validation (no guessing)
         _validate_types(name, args)
 
-        # 7) 真正调用工具
+        # 7) Actually call the tool
         try:
             result = fn(**args)
         except Exception as e:
             raise
 
-        # 8) 存入对象仓库 + 提供 JSON-safe preview 给后续工具/模型参考
+        # 8) Store result in object repo + return JSON-safe preview for later tools/model
         ref = self.store.put(result)
         preview = _coerce_preview(result)
         return {"ok": True, "ref": ref, "preview": preview}
@@ -815,29 +797,3 @@ class ChatStockAgent:
             text = (msg.content or "").strip()
             self.messages.append({"role": "assistant", "content": text})
             return text
-
-
-# ----------------------------
-# CLI 示例
-# ----------------------------
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="QuantChat — Chat-style Quant Agent with tools")
-    parser.add_argument("--model", type=str, default="gpt-4.1-mini")
-    args = parser.parse_args()
-
-    agent = ChatStockAgent(model=args.model, verbose=True)
-    print("QuantChat ready. Ask things like:")
-    print("  - 'Compute 1d 95% VaR for AAPL with $100k using last 252 days.'")
-    print("  - 'Optimize max_sharpe for AAPL, MSFT, NVDA; rf=2%.'")
-    print("-"*60)
-
-    while True:
-        try:
-            q = input("\nYou: ").strip()
-            if not q: continue
-            if q.lower() in {"exit", "quit"}: break
-            ans = agent.ask(q)
-            print("\nAgent:", ans)
-        except KeyboardInterrupt:
-            break
