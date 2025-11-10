@@ -239,6 +239,7 @@ end_date_sel = None
 sh_restarts = 0
 sh_seed = 0
 save_csv = False
+news_open = False
 
 prophet_tune = False
 prophet_metric = "rmse"
