@@ -140,18 +140,6 @@ If no key is set:
 
 ---
 
-## 🚀 Run the App
-
-Launch the Streamlit app locally:
-
-~~~bash
-streamlit run app.py
-~~~
-
-Then open the URL shown in your terminal (typically `http://localhost:8501`).
-
----
-
 ## 🕹 How to Use
 
 ### 1. Analysis Mode (default)
