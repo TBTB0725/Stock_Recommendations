@@ -5,6 +5,7 @@ env/
 
 # Python caches & builds
 __pycache__/
+*.pyc
 *.py[cod]
 *.egg-info/
 dist/
