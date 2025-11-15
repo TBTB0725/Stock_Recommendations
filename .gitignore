@@ -1,9 +1,13 @@
-# Python venv
+# -------------------------------
+# Python virtual envs
+# -------------------------------
 .venv/
 venv/
 env/
 
+# -------------------------------
 # Python caches & builds
+# -------------------------------
 __pycache__/
 *.pyc
 *.py[cod]
@@ -12,12 +16,34 @@ dist/
 build/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# Editors/OS
+# -------------------------------
+# Streamlit
+# -------------------------------
+.streamlit/secrets.toml
+.streamlit/credentials.toml
+
+# -------------------------------
+# Project artifacts
+# -------------------------------
+outputs/
+*.zip
+*.csv
+
+# -------------------------------
+# Editors / OS cruft
+# -------------------------------
 .vscode/
 .idea/
 .DS_Store
 
+# -------------------------------
 # Env files
+# -------------------------------
 .env
 .env.*
