@@ -1,102 +1,235 @@
-# 📈 Stock Portfolio Optimization with Prophet + Portfolio Volatility + VaR
+# 📈 Stock Portfolio Optimization & QuantChat Agent
 
-Analyze and optimize stock portfolios using Prophet for growth forecasts and Portfolio Volatility + VaR for risk assessment.
+An interactive Streamlit app for **forecasting**, **risk modeling**, **portfolio optimization**, and an optional **LLM-powered quant agent**.
+
+It combines:
+
+- Prophet-based expected return forecasts  
+- Covariance / volatility / historical VaR  
+- Min-Variance / Max-Return / Max-Sharpe / Equal-Weight portfolios  
+- Optional FINVIZ news + LLM sentiment  
+- A ChatGPT-style **QuantChat Agent** strictly constrained to these quantitative tools
 
 ---
 
-## 📦 Installation
+## 🏗 Project Structure
 
-Install dependencies:
+**`data.py`**
 
-    pip3 install numpy pandas yfinance prophet scipy tabulate
+- `get_prices`: Fetch historical prices from Yahoo Finance (yfinance).
+- `to_returns`: Convert price levels into daily **log returns**.
+
+**`forecast.py`**
+
+- `prophet_expected_returns`: Use Prophet to forecast future prices / returns given price history and parameters.
+
+**`risk.py`**
+
+- `cov_matrix`: Compute covariance matrix of multi-asset daily returns, with optional annualization (252 trading days).
+- `portfolio_volatility`: Compute portfolio volatility via √(wᵀ Σ w).
+- `portfolio_returns_series`: Combine multi-asset return series into a single portfolio return series using given weights.
+- `var_historical`: Compute portfolio Value-at-Risk using the **historical quantile** method for a chosen horizon & confidence.
+
+**`optimize.py`**
+
+- `solve_min_variance`: Minimum-variance portfolio (weights per asset).
+- `solve_max_return`: Maximum-return portfolio (weights per asset).
+- `solve_max_sharpe`: Maximum-Sharpe portfolio (weights per asset).
+
+**`report.py`**
+
+- `evaluate_portfolio`: Compute key metrics for a given portfolio:
+  - Expected return (μ)
+  - Volatility (σ)
+  - Sharpe ratio
+  - Historical VaR
+  - Weights & allocations
+- `compile_report`: Merge multiple portfolio results into:
+  - A summary metrics table
+  - Wide-format weights & allocation tables for inspection/export.
+
+**`news.py`**
+
+- `fetch_finviz_headlines`: Scrape and filter recent FINVIZ headlines for given tickers; returns a cleaned, time-bounded DataFrame.
+
+**`sentiment.py`**
+
+- `score_titles`: Call an LLM once per **(ticker, headline)** to score short-term price impact; returns inputs enriched with model outputs.
+
+**`agent/tools.py`**
+
+- Wraps the functions above as **callable tools** (prices, returns, forecast, risk, optimization, report, news, sentiment) for the agent.
+
+**`agent/agent.py`**
+
+- `ChatStockAgent`:
+  - Uses OpenAI Chat Completions as the "brain".
+  - Can only answer questions by calling the registered tools.
+  - Enforces:
+    - No invented numeric results.
+    - Strict input validation & type checks.
+    - Scope limited to: prices, returns, Prophet forecasts, covariance & VaR, optimization, evaluation, news & sentiment.
+
+**`app.py`**
+
+- Streamlit app UI that ties everything together:
+  - **Analysis Mode**:
+    - Configure tickers, capital, horizon, lookback, caps, risk-free rate, etc.
+    - Run pipeline:
+      - Fetch prices → log returns
+      - Prophet-based μ forecast
+      - Σ estimation
+      - Min-Var / Max-Return / Max-Sharpe / Equal-Weight optimization
+      - Portfolio evaluation & VaR
+    - Auto-generated **English summary**:
+      - Explains Max-Sharpe / Max-Return / Min-Variance portfolios:
+        top holdings, expected horizon returns, 1D 95% VaR.
+    - Interactive charts & tables:
+      - Forecasted returns
+      - Stacked weights
+      - Allocations
+      - Strategy-level return / volatility / Sharpe
+    - Optional:
+      - FINVIZ news fetch
+      - LLM-based sentiment scoring & visualization
+  - **🤖 Agent Mode — QuantChat**:
+    - Chat UI (user messages on the right, agent on the left).
+    - Uses `ChatStockAgent` under the hood.
+    - Only responds using the allowed quantitative tools.
+    - Reset button to clear conversation state.
 
 ---
 
-## 🚀 Usage
+## 💻 Installation
 
-Run in terminal
+Recommended: **Python 3.9+**
 
-For website: 
+Install dependencies (minimal example):
 
-```bash
+~~~bash
+pip install \
+  numpy pandas yfinance prophet scipy tabulate \
+  streamlit altair openai requests beautifulsoup4
+~~~
+
+Or use your existing `requirements.txt` if provided.
+
+---
+
+## 🔑 OpenAI API Key (for Agent & Sentiment)
+
+The following features require an OpenAI-compatible API key:
+
+- 🤖 QuantChat Agent mode
+- 📰 LLM-based news sentiment scoring
+
+Set **one** of:
+
+~~~bash
+export OPENAI_API_KEY="sk-..."   # preferred
+# or
+export OPENAI="sk-..."
+~~~
+
+On Streamlit Cloud, you can also put it into **Secrets**.
+
+If no key is set:
+
+- Core analytics (prices, forecasts, optimization, VaR, charts) still work.
+- Agent mode and sentiment scoring are disabled or will show a warning.
+
+---
+
+## 🚀 Run the App
+
+Launch the Streamlit app locally:
+
+~~~bash
 streamlit run app.py
-```
+~~~
 
-For teminal print: 
-
-```bash
-python3 main.py   --tickers AAPL,MSFT,GOOG,AMZN,TSLA,NVDA,META,IBM,ORCL,INTC,AMD,QCOM,CSCO,BA,CAT,KO,PEP,WMT,TGT,NKE   --capital 100000   --horizon 3M   --lookback-days 504   --var-alpha 0.05   --var-horizon-days 1   --rf 0.041   --max-weight-per-asset 0.2   --prophet-tune   --prophet-cv-metric rmse   --prophet-cv-initial 252   --prophet-cv-period 126   --end 2025-09-04   --sharpe-restarts 10   --prophet-grid '{"n_changepoints":[0,5],"changepoint_prior_scale":[0.01,0.03,0.1],"weekly_seasonality":[false],"yearly_seasonality": [False],"daily_seasonality": [False], "seasonality_mode":["additive"]}'  --save-csv
-```
-
-
-    python3 main.py \
-      --tickers AAPL,MSFT,GOOG,AMZN \
-      --capital 100000 \
-      --horizon 3M \
-      --lookback-days 252 \
-      --var-alpha 0.05 \ 
-      --var-horizon-days 1 \
-      --rf 0.041 \ 
-      --max-weight-per-asset 0.4 \ 
-      --prophet-tune \
-      --prophet-cv-metric rmse \
-      --prophet-cv-initial 252 \
-      --prophet-cv-period 126
-      --end 2025-09-04 \ 
-      --sharpe-restarts 10 \ 
-      --prophet-grid '{"n_changepoints":[0,5],"changepoint_prior_scale":[0.01,0.03,0.1],"weekly_seasonality":[false],"yearly_seasonality": [False],"daily_seasonality": [False], "seasonality_mode":["additive"]}' \
-      --save-csv
+Then open the URL shown in your terminal (typically `http://localhost:8501`).
 
 ---
 
-## ⚙️ Parameters
+## 🕹 How to Use
 
-Parameter                  | Description
--------------------------- | --------------------------------------------------------------------------------------------
---tickers                  | Comma-separated stock tickers (e.g. AAPL,MSFT,GOOG)
---capital                  | Total capital to invest (e.g. 100000)
---horizon                  | Forecast horizon (e.g. 1M, 3M, 6M, 1Y)
---lookback-days            | Historical lookback in business days (e.g. 252)
---var-alpha                | VaR alpha (e.g. 0.05=95%, 0.01=99%)
---var-horizon-days         | VaR horizon in trading days (e.g. 1=1D, 5≈1W, 21≈1M)
---rf                       | Annual risk-free rate (e.g. 0.041)
---max-weight-per-asset     | Max allocation per stock (e.g. 0.4)
---prophet-tune             | Enable Prophet hyper-parameter tuning with time-series cross-validation
---prophet-cv-metric        | Metric to select best Prophet params (mse, rmse, mae, mape, mdape, coverage). Default=rmse
---prophet-cv-initial       | Initial training window for Prophet CV (in TRADING days). Default=max(252, 3*horizon)
---prophet-cv-period        | Step size between Prophet CV cutoffs (in TRADING days). Default=max(21, horizon//2)
---end                      | End date (YYYY-MM-DD). Default = today
---sharpe-restarts          | Number of random restarts for Max Sharpe optimization
---save-csv                 | Save results under ./outputs/
---prophet-grid             | Inline JSON defining Prophet param grid
---prophet-grid-file        | Path to JSON file containing Prophet param grid (alternative to --prophet-grid)
+### 1. Analysis Mode (default)
+
+1. Select:
+   - Tickers
+   - Total capital
+   - Forecast horizon (`1D`, `5D`, `1W`, `2W`, `1M`)
+2. Optionally fine-tune:
+   - Lookback window
+   - Risk-free rate
+   - Per-asset weight cap
+   - End date
+   - Prophet tuning & grid
+   - News & sentiment
+3. Click **"🚀 Run Analysis"**.
+
+You will get:
+
+- A concise **Strategy Recommendation Summary**:
+  - Max-Sharpe portfolio (balanced risk/return)
+  - Max-Return portfolio (aggressive)
+  - Min-Variance portfolio (defensive)
+  - Each with top allocations, expected horizon return, and 1D 95% VaR.
+- Detailed charts:
+  - Forecasted horizon returns per ticker
+  - Stacked weights by strategy
+  - Strategy-level returns & volatilities
+- Tables:
+  - Weights and allocations
+  - Summary metrics (Return, Vol, VaR, Sharpe)
+- Optional news & sentiment section, plus CSV / ZIP downloads.
+
+### 2. 🤖 Agent Mode — QuantChat
+
+Toggle **"🤖 Agent mode"** in the sidebar:
+
+- Shows a clean ChatGPT-style layout:
+  - You on the right, agent on the left.
+  - “Reset Conversation” button to clear state.
+- Ask quantitative questions such as:
+  - “With \$100,000 and tickers AAPL, MSFT, NVDA, find the max_sharpe portfolio and show μ, σ, VaR.”
+  - “For the next 1M, based on your tools, is AAPL or AMZN more attractive?”
+  - “Here are my weights for AAPL, MSFT, AMZN — compute Sharpe and 1D 95% VaR.”
+  - “Fetch recent TSLA news and score the short-term impact.”
+
+**Scope & Guarantees**
+
+- Only uses:
+  - `get_prices`, `to_returns`
+  - `prophet_expected_returns`
+  - `cov_matrix`, `portfolio_volatility`, `portfolio_returns_series`, `var_historical`
+  - `solve_min_variance`, `solve_max_return`, `solve_max_sharpe`
+  - `evaluate_portfolio`, `compile_report`
+  - `fetch_finviz_headlines`, `score_titles`
+- Performs strict argument & type validation before every tool call.
+- Never fabricates numeric outputs: if tools fail or inputs are missing, it explains instead of guessing.
 
 ---
 
-## 📊 Output
+## 🧠 Methodology (High Level)
 
-Generates and prints:
-
-- ✅ Minimum Risk
-- 📈 Maximum Return
-- 🔁 Sharpe Ratio Optimized
-- ⚖️ Equally Weighted (Baseline)
-
-Each one includes:
-- Ticker weights
-- Ticker allocations
-- Expected return (annual)
-- Volatility(annual)
-- VaR at specified confidence level
-- Sharpe
+- **Forecasting**: Prophet-based expected returns over discrete horizons.
+- **Risk**:
+  - Covariance matrix estimated from historical log returns.
+  - Volatility via √(wᵀ Σ w).
+  - Historical VaR at chosen confidence & horizon.
+- **Optimization**:
+  - Min-Variance: minimize σ.
+  - Max-Return: maximize μ.
+  - Max-Sharpe: maximize (μ − r_f) / σ.
+  - Equal-Weight: simple baseline.
+- **Explainability**:
+  - Human-readable summary on top of charts.
+  - All detailed tables & plots available for audit.
 
 ---
 
+## 📄 License
 
-## 🧠 Methodology
-
-- Forecasting Prophet predicts expected log-returns, annualized
-- Hyper-parameter tuning with time-series cross-validation (CV)
-- Risk Covariance matrix + historical Value-at-Risk
-- Min Variance (minimize risk), Max Return (maximize return), Max Sharpe (maximize risk-adjusted return), Equal Weight (baseline)
-
+MIT (or your chosen license).
